@@ -3,6 +3,7 @@ import { api, streamGenerate, type Doc, type GenEvent } from '../api'
 import { useI18n } from '../i18n'
 import { MarkdownEditor, type EditorHandle } from './MarkdownEditor'
 import { GenerateDialog, type GenRequest } from './GenerateDialog'
+import { Menu } from './Menu'
 import { createSimpleMindMap } from '../mindmap/simpleMindMapAdapter'
 import type { ExportFormat, MapCommand, MindMapAdapter, Selection } from '../mindmap/adapter'
 import { parseMarkdown, serializeOutline, type OutlineNode } from '../../../shared/outline'
@@ -27,10 +28,13 @@ export async function copyText(text: string) {
 
 const isDefaultTitle = (s: string) => !s || s === 'Untitled' || s === '未命名'
 
-export function Workspace({ doc, onMetaChange, settings }: {
+export function Workspace({ doc, onMetaChange, settings, onImport, onAbout, onToggleNav }: {
   doc: Doc
   onMetaChange: (d: Partial<Doc> & { id: string }) => void
   settings: { chunkChars: number; maxInputChars: number; configured: boolean }
+  onImport: () => void
+  onAbout: () => void
+  onToggleNav: () => void
 }) {
   const { t } = useI18n()
   const editor = useRef<EditorHandle>(null)
@@ -43,7 +47,6 @@ export function Workspace({ doc, onMetaChange, settings }: {
   const [save, setSave] = useState<SaveState>('saved')
   const [genOpen, setGenOpen] = useState<null | 'full' | 'expand'>(null)
   const [gen, setGen] = useState<{ status: string; running: boolean; error?: boolean } | null>(null)
-  const [exportOpen, setExportOpen] = useState(false)
   const [toast, setToast] = useState('')
   const abort = useRef<AbortController | null>(null)
   const saveTimer = useRef<number | undefined>(undefined)
@@ -184,7 +187,6 @@ export function Workspace({ doc, onMetaChange, settings }: {
   // ---------- export ----------
   const fileBase = (doc.title || 'mindmap').replace(/[\\/:*?"<>|]/g, '_')
   const doExport = async (f: ExportFormat | 'md' | 'opml') => {
-    setExportOpen(false)
     await flush()
     try {
       if (f === 'md') download(`${fileBase}.md`, editor.current!.getText(), 'text/markdown;charset=utf-8')
@@ -199,22 +201,25 @@ export function Workspace({ doc, onMetaChange, settings }: {
   return (
     <div className="workspace">
       <div className="toolbar">
-        <input className="title-input" value={doc.title} onChange={(e) => onMetaChange({ id: doc.id, title: e.target.value })}
+        <button className="icon-btn nav-toggle" title={t('menu')} aria-label={t('menu')} onClick={onToggleNav}>☰</button>
+        <input className="title-input" value={doc.title} title={doc.title} onChange={(e) => onMetaChange({ id: doc.id, title: e.target.value })}
           onBlur={(e) => api('PUT', `/api/docs/${doc.id}`, { title: e.target.value }).then((r: any) => onMetaChange({ id: doc.id, title: r.doc.title })).catch(() => {})} />
         <span className={`save-state ${save}`}>{save === 'saving' ? t('saving') : save === 'error' ? t('saveFailed') : save === 'dirty' ? '•' : t('saved')}</span>
-        <div className="spacer" />
-        <button className="btn primary" disabled={!!gen?.running} onClick={() => setGenOpen('full')}>✨ {t('generate')}</button>
-        <button className="btn" disabled={!!gen?.running || !selection} title={t('modeExpand')} onClick={() => setGenOpen('expand')}>＋ {t('modeExpand')}</button>
-        <button className="btn" onClick={async () => { await copyText(editor.current!.getText()); setToast(t('copied')) }}>{t('copyMd')}</button>
-        <div className="menu-wrap">
-          <button className="btn" onClick={() => setExportOpen((v) => !v)}>{t('export')} ▾</button>
-          {exportOpen && (
-            <div className="menu" onMouseLeave={() => setExportOpen(false)}>
-              <button onClick={() => doExport('md')}>Markdown (.md)</button>
-              {map.current?.exportFormats.map((f) => <button key={f} onClick={() => doExport(f)}>{f.toUpperCase()} (.{f})</button>)}
-              <button onClick={() => doExport('opml')}>OPML (.opml)</button>
-            </div>
-          )}
+        <div className="toolbar-actions">
+          {gen?.running
+            ? <button className="btn danger" data-testid="stop" onClick={() => abort.current?.abort()}><span className="ico">■</span><span className="lbl">{t('stop')}</span></button>
+            : <button className="btn primary" data-testid="generate" onClick={() => setGenOpen('full')}><span className="ico">✨</span><span className="lbl">{t('generate')}</span></button>}
+          <button className="btn collapsible" disabled={!!gen?.running || !selection} title={t('modeExpand')} aria-label={t('modeExpand')} onClick={() => setGenOpen('expand')}><span className="ico">＋</span><span className="lbl">{t('expandShort')}</span></button>
+          <Menu title={t('export')} testId="export-menu" trigger={<><span className="ico">⇩</span><span className="lbl">{t('export')}</span><span className="caret">▾</span></>} items={[
+            { key: 'md', label: 'Markdown (.md)', onSelect: () => doExport('md') },
+            ...(map.current?.exportFormats ?? []).map((f) => ({ key: f, label: `${f.toUpperCase()} (.${f})`, onSelect: () => doExport(f) })),
+            { key: 'opml', label: 'OPML (.opml)', onSelect: () => doExport('opml') },
+          ]} />
+          <Menu className="btn icon-only" title={t('more')} testId="more-menu" trigger="⋯" items={[
+            { key: 'import', icon: '⇪', label: t('importMd'), onSelect: onImport },
+            { key: 'copy', icon: '📋', label: t('copyMd'), onSelect: async () => { await copyText(editor.current!.getText()); setToast(t('copied')) } },
+            { key: 'about', icon: 'ⓘ', label: t('about'), onSelect: onAbout, divider: true },
+          ]} />
         </div>
       </div>
       {!settings.configured && <div className="banner warn">{t('notConfigured')}</div>}
@@ -222,7 +227,7 @@ export function Workspace({ doc, onMetaChange, settings }: {
         <div className={`banner ${gen.error ? 'err' : gen.running ? 'info' : 'ok'}`}>
           {gen.running && <span className="spinner" />}
           <span className="grow">{gen.status}</span>
-          {gen.running ? <button className="btn small danger" onClick={() => abort.current?.abort()}>■ {t('stop')}</button> : <button className="icon-btn" onClick={() => setGen(null)}>✕</button>}
+          {!gen.running && <button className="icon-btn" title={t('close')} aria-label={t('close')} onClick={() => setGen(null)}>✕</button>}
         </div>
       )}
       <div className="panes">

@@ -15,7 +15,7 @@ Paste an article, notes or a transcript, and the LLM writes a Markdown outline t
 - **Stop** a running generation (the upstream request is cancelled). If the model answers with prose instead of an outline, it retries once, then shows a clear error.
 - **Documents**: create, rename, delete, import `.md`, autosave, one-click copy of the Markdown.
 - **Export**: Markdown, PNG, SVG, PDF, XMind (browser), OPML and JSON (server).
-- **Admin settings**: Base URL, model, API key (stored encrypted, never sent to the browser), editable system prompt with reset, and a *Test connection* button that tells a bad key (401) from a wrong URL / network error from an unknown model (404).
+- **Admin settings**: Base URL, model, API key (stored encrypted, never sent to the browser), editable system prompt with reset, and a *Test connection* button that tells a bad key (401) from a wrong URL / network error from an unknown model (404), and a *Fetch models* button that loads the provider's `/models` list into a searchable dropdown (you can still type any model name).
 - **Single admin account** created on first start. No public sign-up. Data lives in one SQLite file.
 - UI in English and Chinese.
 

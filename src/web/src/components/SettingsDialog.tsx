@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { api, type Me } from '../api'
 import { useI18n } from '../i18n'
 import { Modal } from './Modal'
+import { ModelPicker } from './ModelPicker'
 
 interface SettingsView {
   llm: { baseUrl: string; model: string; hasApiKey: boolean; keySource: 'settings' | 'env' | 'none' }
@@ -52,7 +53,10 @@ export function SettingsDialog({ me, onClose }: { me: Me; onClose: () => void })
             <h3>{t('llmSection')}</h3>
             <label>{t('baseUrl')}<input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" /></label>
             <div className="hint">{t('envDefault', { v: view.env.baseUrl })}</div>
-            <label>{t('model')}<input value={model} onChange={(e) => setModel(e.target.value)} placeholder="gpt-4o-mini" /></label>
+            <div className="field">
+              <div className="field-label">{t('model')}</div>
+              <ModelPicker value={model} onChange={setModel} baseUrl={baseUrl} apiKey={apiKey} placeholder="gpt-4o-mini" />
+            </div>
             <div className="hint">{t('envDefault', { v: view.env.model })}</div>
             <label>{t('apiKey')}<input type="password" autoComplete="off" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-…" /></label>
             <div className="hint">

@@ -9,7 +9,7 @@ import { SecretBox } from './secrets'
 import { SetupCode } from './setupCode'
 import { RateLimiter, SESSION_COOKIE, createFirstUser, createSession, deleteSession, sessionUser, userCount, type User } from './auth'
 import { hashPassword, validateCredentials, verifyPassword } from './passwords'
-import { LlmError, testConnection, type LlmConfig } from './llm'
+import { LlmError, listModels, testConnection, type LlmConfig } from './llm'
 import { DEFAULT_SYSTEM_PROMPT } from './prompts'
 import { expandNode, generateOutline, type GenEvent } from './generate'
 import { parseMarkdown, type OutlineNode } from '../shared/outline'
@@ -346,6 +346,19 @@ export function createApp(deps: AppDeps) {
     }
     const r = await testConnection(cfg)
     return c.json({ ...r, message: r.message.split(cfg.apiKey || '\u0000').join('***') })
+  })
+
+  // Lists the provider's models for the settings form. Uses the Base URL / key typed in the form when
+  // given, otherwise the saved ones. The key itself is never sent back.
+  app.post('/api/settings/models', adminOnly, async (c) => {
+    const b = await c.req.json().catch(() => ({}))
+    const cur = effectiveLlm(deps)
+    const typedUrl = typeof b.baseUrl === 'string' ? b.baseUrl.trim() : ''
+    if (typedUrl && !/^https?:\/\/[^\s]+$/i.test(typedUrl)) return c.json({ error: 'Base URL must start with http:// or https://' }, 400)
+    const baseUrl = typedUrl ? typedUrl.replace(/\/+$/, '') : cur.baseUrl
+    const apiKey = typeof b.apiKey === 'string' && b.apiKey.trim() ? b.apiKey.trim() : cur.apiKey
+    const r = await listModels(baseUrl, apiKey, 15_000)
+    return c.json(r)
   })
 
   app.all('/api/*', (c) => c.json({ error: 'Not found' }, 404))

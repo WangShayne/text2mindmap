@@ -168,8 +168,7 @@ export async function testConnection(cfg: LlmConfig): Promise<TestResult> {
     const res = await fetch(cfg.baseUrl + '/models', { headers: cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : {}, signal: AbortSignal.timeout(15_000) })
     if (res.status === 401 || res.status === 403) return { ok: false, code: 'auth', message: `The API key was rejected (HTTP ${res.status}).` }
     if (res.ok) {
-      const j = (await res.json().catch(() => null)) as { data?: { id?: string }[] } | null
-      if (Array.isArray(j?.data)) modelList = j!.data.map((m) => String(m.id))
+      modelList = parseModelList(await res.json().catch(() => null))
     }
   } catch (e) {
     const cause = (e as { cause?: { code?: string } }).cause
@@ -186,4 +185,69 @@ export async function testConnection(cfg: LlmConfig): Promise<TestResult> {
     if (err.code === 'model' && modelList) return { ok: false, code: 'model', message: `${err.message} Available: ${modelList.slice(0, 10).join(', ')}` }
     return { ok: false, code: err.code ?? 'upstream', message: err.message }
   }
+}
+
+/**
+ * Pulls model ids out of a /models response. Accepts the OpenAI shape ({ data: [{ id }] }) and the
+ * variants some providers use: a bare array, { models: [...] }, items that are strings or carry
+ * `name`/`model` instead of `id`. Returns undefined when nothing recognisable is found.
+ */
+export function parseModelList(json: unknown): string[] | undefined {
+  const pickArray = (v: unknown): unknown[] | undefined => {
+    if (Array.isArray(v)) return v
+    if (v && typeof v === 'object') {
+      const o = v as Record<string, unknown>
+      for (const k of ['data', 'models', 'items', 'result']) {
+        const inner = o[k]
+        if (Array.isArray(inner)) return inner
+        if (inner && typeof inner === 'object') { const deep = pickArray(inner); if (deep) return deep }
+      }
+    }
+    return undefined
+  }
+  const arr = pickArray(json)
+  if (!arr) return undefined
+  const ids = arr
+    .map((m) => {
+      if (typeof m === 'string') return m
+      if (m && typeof m === 'object') {
+        const o = m as Record<string, unknown>
+        const v = o.id ?? o.name ?? o.model
+        return typeof v === 'string' ? v : undefined
+      }
+      return undefined
+    })
+    .filter((s): s is string => !!s && !!s.trim())
+    .map((s) => s.trim())
+  return [...new Set(ids)].sort((a, b) => a.localeCompare(b, 'en', { numeric: true, sensitivity: 'base' }))
+}
+
+export type ModelListResult = { ok: true; models: string[] } | { ok: false; code: LlmErrorCode; message: string }
+
+/** GET {baseUrl}/models with the given key. Never throws; error messages are redacted. */
+export async function listModels(baseUrl: string, apiKey: string, timeoutMs = 15_000): Promise<ModelListResult> {
+  const fail = (code: LlmErrorCode, message: string): ModelListResult => ({ ok: false, code, message: redact(message, apiKey) })
+  if (!baseUrl) return fail('not_configured', 'Base URL is empty.')
+  let res: Response
+  try {
+    res = await fetch(baseUrl + '/models', {
+      headers: { accept: 'application/json', ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+  } catch (e) {
+    const err = e as Error & { cause?: { code?: string; message?: string } }
+    if (err.name === 'TimeoutError' || err.name === 'AbortError') return fail('timeout', `${baseUrl}/models did not answer within ${Math.round(timeoutMs / 1000)}s.`)
+    return fail('network', `Could not reach ${baseUrl} (${err.cause?.code ?? err.cause?.message ?? err.message}). Check the Base URL and that the server is reachable from this machine.`)
+  }
+  const text = await res.text().catch(() => '')
+  const short = text.replace(/\s+/g, ' ').slice(0, 200)
+  if (res.status === 401 || res.status === 403) return fail('auth', `The API key was rejected (HTTP ${res.status}). ${short}`)
+  if (res.status === 404 || res.status === 405) return fail('not_found', `This provider does not offer a model list (HTTP ${res.status} on ${baseUrl}/models). Check the Base URL (it usually ends with /v1), or type the model name by hand.`)
+  if (res.status === 429) return fail('rate_limit', `Rate limited (HTTP 429). ${short}`)
+  if (!res.ok) return fail('upstream', `The server returned HTTP ${res.status}. ${short}`)
+  let json: unknown
+  try { json = JSON.parse(text) } catch { return fail('bad_response', `The response is not JSON, so it is probably not an OpenAI-compatible API. Check the Base URL. Response starts with: ${short || '(empty)'}`) }
+  const models = parseModelList(json)
+  if (!models) return fail('bad_response', 'The response has no model list in a known format. Type the model name by hand.')
+  return { ok: true, models }
 }
