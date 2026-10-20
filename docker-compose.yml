@@ -1,0 +1,17 @@
+services:
+  text2mindmap:
+    build: .
+    image: text2mindmap:latest
+    container_name: text2mindmap
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATA_DIR: /data
+    ports:
+      # Only reachable from this machine by default. Put a reverse proxy with HTTPS in front,
+      # or change to "3000:3000" to expose it directly.
+      - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-3000}:3000"
+    volumes:
+      - ./data:/data

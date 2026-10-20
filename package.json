@@ -1,0 +1,49 @@
+{
+  "name": "text2mindmap",
+  "version": "0.1.0",
+  "description": "Turn text into an editable mind map with any OpenAI-compatible LLM. Self-hosted, Docker.",
+  "scripts": {
+    "dev": "node --watch --disable-warning=ExperimentalWarning --import tsx src/server/index.ts",
+    "dev:web": "vite",
+    "build": "npm run build:web && npm run build:server",
+    "build:web": "vite build",
+    "build:server": "node scripts/build-server.mjs",
+    "start": "node --disable-warning=ExperimentalWarning dist/server/index.mjs",
+    "typecheck": "tsc -p .",
+    "test": "vitest run",
+    "license-check": "node scripts/license-check.mjs",
+    "notices": "node scripts/license-check.mjs --write-notices",
+    "mock-llm": "node scripts/mock-llm.mjs"
+  },
+  "author": "Shayne Wang",
+  "license": "MIT",
+  "dependencies": {
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-markdown": "^6.5.2",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.15",
+    "@hono/node-server": "^2.1.5",
+    "@lezer/highlight": "^1.2.5",
+    "hono": "^4.13.13",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "simple-mind-map": "^0.14.0-fix.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  },
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  }
+}
