@@ -6,6 +6,7 @@ import { bodyLimit } from 'hono/body-limit'
 import type { AppConfig } from './config'
 import { getSetting, setSetting, type DB } from './db'
 import { SecretBox } from './secrets'
+import { SetupCode } from './setupCode'
 import { RateLimiter, SESSION_COOKIE, createFirstUser, createSession, deleteSession, sessionUser, userCount, type User } from './auth'
 import { hashPassword, validateCredentials, verifyPassword } from './passwords'
 import { LlmError, testConnection, type LlmConfig } from './llm'
@@ -16,7 +17,7 @@ import { APP_NAME } from '../shared/brand'
 
 type Env = { Variables: { user: User } }
 
-export interface AppDeps { db: DB; config: AppConfig; secretBox: SecretBox; version?: string }
+export interface AppDeps { db: DB; config: AppConfig; secretBox: SecretBox; setupCode: SetupCode; version?: string }
 
 const K = { baseUrl: 'llm_base_url', model: 'llm_model', apiKey: 'llm_api_key_enc', prompt: 'system_prompt' } as const
 
@@ -38,21 +39,40 @@ export function effectiveLlm(deps: AppDeps): LlmConfig & { keySource: 'settings'
   }
 }
 
-function clientIp(c: Context, trustProxy: boolean): string {
-  if (trustProxy) {
-    const xf = c.req.header('x-forwarded-for')
-    if (xf) return xf.split(',')[0].trim()
-    const xr = c.req.header('x-real-ip')
+/**
+ * Client IP for rate limiting. Without TRUST_PROXY the socket address is used and
+ * X-Forwarded-For is ignored (it could be forged). With TRUST_PROXY=N the address is taken
+ * from X-Forwarded-For counting N entries from the right: each trusted proxy appends the
+ * address it received the request from, so entries further left are client-controlled.
+ */
+export function clientIp(c: Context, trustProxy: number): string {
+  const incoming = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming
+  const socketIp = incoming?.socket?.remoteAddress ?? 'unknown'
+  if (trustProxy > 0) {
+    const chain = (c.req.header('x-forwarded-for') ?? '').split(',').map((s) => s.trim()).filter(Boolean)
+    if (chain.length) return chain[Math.max(0, chain.length - trustProxy)]
+    const xr = c.req.header('x-real-ip')?.trim()
     if (xr) return xr
   }
-  const incoming = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming
-  return incoming?.socket?.remoteAddress ?? 'unknown'
+  return socketIp
 }
 
-function isHttps(c: Context, cfg: AppConfig): boolean {
+/** First value of a comma-separated forwarded header (the one set by the outermost proxy). */
+function forwarded(c: Context, name: string): string | undefined {
+  return c.req.header(name)?.split(',')[0]?.trim().toLowerCase() || undefined
+}
+
+/** Whether the browser talks HTTPS to us (directly, or to a trusted proxy). Drives the Secure cookie flag. */
+export function isHttps(c: Context, cfg: AppConfig): boolean {
   if (cfg.cookieSecure !== 'auto') return cfg.cookieSecure
   if (new URL(c.req.url).protocol === 'https:') return true
-  return cfg.trustProxy && c.req.header('x-forwarded-proto') === 'https'
+  return cfg.trustProxy > 0 && forwarded(c, 'x-forwarded-proto') === 'https'
+}
+
+/** Host the browser used, for the same-origin check. */
+function requestHost(c: Context, cfg: AppConfig): string | undefined {
+  if (cfg.trustProxy > 0) { const h = forwarded(c, 'x-forwarded-host'); if (h) return h }
+  return c.req.header('host')?.toLowerCase()
 }
 
 function sanitizeTitle(t: unknown, fallback = 'Untitled'): string {
@@ -73,6 +93,7 @@ export function createApp(deps: AppDeps) {
   const { db, config } = deps
   const app = new Hono<Env>()
   const loginLimiter = new RateLimiter(10, 15 * 60_000)
+  const setupLimiter = new RateLimiter(10, 15 * 60_000)
 
   app.onError((err, c) => {
     console.error('[error]', err)
@@ -93,8 +114,8 @@ export function createApp(deps: AppDeps) {
       if (!ct.includes('application/json')) return c.json({ error: 'Content-Type must be application/json' }, 415)
       const origin = c.req.header('origin')
       if (origin) {
-        const host = c.req.header('x-forwarded-host') && config.trustProxy ? c.req.header('x-forwarded-host') : c.req.header('host')
-        try { if (new URL(origin).host !== host) return c.json({ error: 'Cross-origin request rejected' }, 403) } catch { return c.json({ error: 'Bad Origin' }, 403) }
+        const host = requestHost(c, config)
+        try { if (new URL(origin).host.toLowerCase() !== host) return c.json({ error: 'Cross-origin request rejected' }, 403) } catch { return c.json({ error: 'Bad Origin' }, 403) }
       }
     }
     await next()
@@ -104,15 +125,25 @@ export function createApp(deps: AppDeps) {
   // ---------- public ----------
   app.get('/api/health', (c) => c.json({ ok: true, name: APP_NAME, version: deps.version ?? 'dev' }))
 
-  app.get('/api/setup', (c) => c.json({ needsSetup: userCount(db) === 0 }))
+  app.get('/api/setup', (c) => c.json({ needsSetup: userCount(db) === 0, requiresCode: true }))
 
+  // First-run admin creation. Requires the one-time setup code printed to the server log.
   app.post('/api/setup', async (c) => {
     if (userCount(db) > 0) return c.json({ error: 'Setup is already complete' }, 403)
+    const ip = clientIp(c, config.trustProxy)
+    const wait = setupLimiter.blocked(ip)
+    if (wait) { c.header('Retry-After', String(wait)); return c.json({ error: `Too many wrong setup codes. Try again in ${Math.ceil(wait / 60)} min.` }, 429) }
     const body = await c.req.json().catch(() => ({}))
+    if (!deps.setupCode.matches(body.setupCode)) {
+      setupLimiter.fail(ip)
+      return c.json({ error: deps.setupCode.active ? 'Wrong setup code. Find it in the server log (docker compose logs).' : 'Setup is not available. Restart the server to get a setup code, or set ADMIN_USERNAME and ADMIN_PASSWORD.' }, 403)
+    }
     const err = validateCredentials(body.username, body.password)
     if (err) return c.json({ error: err }, 400)
     const user = await createFirstUser(db, body.username, body.password)
     if (!user) return c.json({ error: 'Setup is already complete' }, 403)
+    deps.setupCode.consume()
+    setupLimiter.clear(ip)
     const s = createSession(db, user.id, config.sessionDays)
     setSessionCookie(c, s.token, s.expires)
     return c.json({ user: publicUser(user) })

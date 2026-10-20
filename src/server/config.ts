@@ -7,6 +7,14 @@ function int(name: string, def: number): number {
   return Number.isFinite(n) && n > 0 ? n : def
 }
 
+/** TRUST_PROXY: unset/false/0 = off, true = 1 proxy, or a number of proxy hops. */
+export function parseTrustProxy(v: string | undefined): number {
+  const s = (v ?? '').trim().toLowerCase()
+  if (s === 'true' || s === 'yes') return 1
+  const n = Number.parseInt(s, 10)
+  return Number.isFinite(n) && n > 0 ? Math.min(n, 10) : 0
+}
+
 export interface AppConfig {
   port: number
   host: string
@@ -20,7 +28,8 @@ export interface AppConfig {
   llmChunkChars: number
   maxInputChars: number
   cookieSecure: 'auto' | boolean
-  trustProxy: boolean
+  /** Number of reverse proxies in front of the app whose X-Forwarded-* headers are trusted (0 = none). */
+  trustProxy: number
   sessionDays: number
   adminUsername?: string
   adminPassword?: string
@@ -43,7 +52,7 @@ export function loadConfig(env = process.env): AppConfig {
     llmChunkChars: int('LLM_CHUNK_CHARS', 12_000),
     maxInputChars: int('MAX_INPUT_CHARS', 200_000),
     cookieSecure: cs === 'true' ? true : cs === 'false' ? false : 'auto',
-    trustProxy: (env.TRUST_PROXY ?? '').toLowerCase() === 'true',
+    trustProxy: parseTrustProxy(env.TRUST_PROXY),
     sessionDays: int('SESSION_DAYS', 30),
     adminUsername: env.ADMIN_USERNAME || undefined,
     adminPassword: env.ADMIN_PASSWORD || undefined,

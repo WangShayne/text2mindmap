@@ -9,6 +9,7 @@ import { SecretBox, resolveAppSecret } from './secrets'
 import { createApp } from './app'
 import { createFirstUser, userCount } from './auth'
 import { validateCredentials } from './passwords'
+import { SetupCode } from './setupCode'
 import { APP_NAME } from '../shared/brand'
 
 declare const __APP_VERSION__: string | undefined
@@ -19,17 +20,21 @@ async function main() {
   const secretBox = new SecretBox(resolveAppSecret(config.dataDir, config.appSecret))
   const version = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev'
 
+  if (userCount(db) === 0 && config.adminUsername && config.adminPassword) {
+    const err = validateCredentials(config.adminUsername, config.adminPassword)
+    if (err) console.error(`[error] ADMIN_USERNAME/ADMIN_PASSWORD rejected: ${err}`)
+    else { await createFirstUser(db, config.adminUsername, config.adminPassword); console.log(`[info] Created admin user "${config.adminUsername}" from environment.`) }
+  }
+  let setupCode = SetupCode.none()
   if (userCount(db) === 0) {
-    if (config.adminUsername && config.adminPassword) {
-      const err = validateCredentials(config.adminUsername, config.adminPassword)
-      if (err) console.error(`[error] ADMIN_USERNAME/ADMIN_PASSWORD rejected: ${err}`)
-      else { await createFirstUser(db, config.adminUsername, config.adminPassword); console.log(`[info] Created admin user "${config.adminUsername}" from environment.`) }
-    } else {
-      console.warn('[warn] No user exists yet. Open the app and create the admin account on the setup page now (anyone who can reach it first could claim it), or set ADMIN_USERNAME and ADMIN_PASSWORD.')
-    }
+    setupCode = SetupCode.generate(config.dataDir)
+    const line = '='.repeat(64)
+    console.log(`${line}\n  No admin account yet. Open the app and enter this one-time setup code:\n\n      SETUP CODE: ${setupCode.display}\n\n  (also in ${path.join(config.dataDir, 'setup-code')}; a new code is generated on every restart until setup is done)\n${line}`)
+  } else if (config.dataDir !== ':memory:') {
+    fs.rmSync(path.join(config.dataDir, 'setup-code'), { force: true })
   }
 
-  const app = createApp({ db, config, secretBox, version })
+  const app = createApp({ db, config, secretBox, setupCode, version })
   const here = path.dirname(fileURLToPath(import.meta.url))
   const staticDir = config.staticDir ?? path.resolve(here, '../web')
   if (fs.existsSync(path.join(staticDir, 'index.html')) && fs.existsSync(path.join(staticDir, 'assets'))) {

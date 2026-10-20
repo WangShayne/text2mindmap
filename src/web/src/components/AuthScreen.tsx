@@ -8,6 +8,7 @@ export function AuthScreen({ mode, onDone }: { mode: 'setup' | 'login'; onDone: 
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [repeat, setRepeat] = useState('')
+  const [setupCode, setSetupCode] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const submit = async (e: React.FormEvent) => {
@@ -16,7 +17,7 @@ export function AuthScreen({ mode, onDone }: { mode: 'setup' | 'login'; onDone: 
     if (mode === 'setup' && password !== repeat) return setError(t('passwordsDiffer'))
     setBusy(true)
     try {
-      const r = await api<{ user: Me }>('POST', mode === 'setup' ? '/api/setup' : '/api/auth/login', { username, password })
+      const r = await api<{ user: Me }>('POST', mode === 'setup' ? '/api/setup' : '/api/auth/login', mode === 'setup' ? { username, password, setupCode } : { username, password })
       onDone(r.user)
     } catch (err) {
       setError((err as Error).message)
@@ -30,7 +31,13 @@ export function AuthScreen({ mode, onDone }: { mode: 'setup' | 'login'; onDone: 
         <div className="brand big"><span className="logo" />{APP_NAME}</div>
         <h1>{mode === 'setup' ? t('setupTitle') : t('loginTitle')}</h1>
         {mode === 'setup' && <p className="muted">{t('setupHint')}</p>}
-        <label>{t('username')}<input autoFocus autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} required /></label>
+        {mode === 'setup' && (
+          <>
+            <label>{t('setupCode')}<input autoFocus autoComplete="one-time-code" spellCheck={false} value={setupCode} onChange={(e) => setSetupCode(e.target.value)} placeholder="ABCDE-FGHJK" required /></label>
+            <div className="hint">{t('setupCodeHint')}</div>
+          </>
+        )}
+        <label>{t('username')}<input autoFocus={mode === 'login'} autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} required /></label>
         <label>{t('password')}<input type="password" autoComplete={mode === 'setup' ? 'new-password' : 'current-password'} value={password} onChange={(e) => setPassword(e.target.value)} required /></label>
         {mode === 'setup' && <label>{t('passwordRepeat')}<input type="password" autoComplete="new-password" value={repeat} onChange={(e) => setRepeat(e.target.value)} required /></label>}
         {error && <div className="error">{error}</div>}

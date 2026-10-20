@@ -3,6 +3,8 @@ import { createContext, useContext, useState, type ReactNode } from 'react'
 const en = {
   setupTitle: 'Create the admin account',
   setupHint: 'This is a fresh install. The first account becomes the admin. There is no public sign-up.',
+  setupCode: 'Setup code',
+  setupCodeHint: 'A one-time code is printed in the server log at startup. Run `docker compose logs text2mindmap` (or see data/setup-code). A new code is created on every restart until setup is done.',
   loginTitle: 'Sign in',
   username: 'Username',
   password: 'Password',
@@ -95,6 +97,8 @@ type Dict = typeof en
 const zh: Dict = {
   setupTitle: '创建管理员账号',
   setupHint: '这是全新安装。第一个账号就是管理员，之后不开放注册。',
+  setupCode: '初始化码',
+  setupCodeHint: '服务启动时会在日志里打印一个一次性初始化码。运行 `docker compose logs text2mindmap` 查看（也可以看 data/setup-code 文件）。完成初始化之前，每次重启都会生成新的初始化码。',
   loginTitle: '登录',
   username: '用户名',
   password: '密码',

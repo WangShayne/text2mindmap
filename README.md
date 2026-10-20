@@ -28,20 +28,30 @@ cp .env.example .env        # set LLM_BASE_URL, LLM_API_KEY, LLM_MODEL (or set t
 docker compose up -d --build
 ```
 
-Open <http://127.0.0.1:3000>. On first start you create the admin account on a one-time setup page (or set `ADMIN_USERNAME` / `ADMIN_PASSWORD` in `.env` to create it automatically). Do this right away: until the admin exists, anyone who can reach the page can claim it.
+Open <http://127.0.0.1:3000> and create the admin account. The setup page asks for a **one-time setup code** that only the server operator can see:
 
-By default the port is bound to `127.0.0.1` only. Put a reverse proxy with HTTPS (Caddy, nginx, Traefik) in front of it, set `TRUST_PROXY=true`, or set `BIND_ADDRESS=0.0.0.0` to expose it directly.
+```bash
+docker compose logs text2mindmap | grep "SETUP CODE"   # or: cat data/setup-code
+```
+
+A new code is generated on every restart until setup is done, and it stops working once the admin exists. Wrong codes are rate-limited. Alternatively, set `ADMIN_USERNAME` / `ADMIN_PASSWORD` in `.env` to create the admin automatically on first start.
+
+By default the port is bound to `127.0.0.1` only. Put a reverse proxy with HTTPS in front of it (see [Reverse proxy](#reverse-proxy)), or set `BIND_ADDRESS=0.0.0.0` to expose it directly.
 
 The image is built locally from the `Dockerfile` (multi-stage; the runtime image only contains Node and the bundled app, about 170 MB). There is no prebuilt image yet.
 
 ### Calling an LLM on the Docker host
 
-`localhost` inside the container is the container itself. To reach a model server on the host (e.g. Ollama on port 11434), add this to the service in `docker-compose.yml` and use `http://host.docker.internal:11434/v1`:
+`localhost` inside the container is the container itself. To reach a model server running on the host (Ollama, New API, one-api, LM Studio…), use `http://host.docker.internal:<port>/v1`, for example:
 
-```yaml
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+```env
+LLM_BASE_URL=http://host.docker.internal:11434/v1   # Ollama
+LLM_BASE_URL=http://host.docker.internal:3001/v1    # a New API / one-api gateway on port 3001
 ```
+
+`docker-compose.yml` already maps `host.docker.internal` to the host (`extra_hosts: host-gateway`). The model server must listen on an address the container can reach (for Ollama: `OLLAMA_HOST=0.0.0.0`), not only on `127.0.0.1`.
+
+Container logs use the `json-file` driver, rotated at 10 MB × 3 files.
 
 ## Configuration
 
@@ -56,10 +66,10 @@ All settings are environment variables (put them in `.env`). LLM settings are de
 | `LLM_TIMEOUT_MS` | `180000` | Timeout of one LLM request. |
 | `LLM_CHUNK_CHARS` | `12000` | Texts longer than this are split into parts and merged. |
 | `MAX_INPUT_CHARS` | `200000` | Largest accepted input text. |
-| `APP_SECRET` | *(generated)* | Secret used to encrypt the API key saved in Settings (AES-256-GCM, key derived with HKDF). If empty, a random one is generated into `data/secret.key` and a warning is logged. |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | *(empty)* | Create the admin on first start instead of using the setup page. Ignored once a user exists. |
+| `APP_SECRET` | *(generated)* | Secret used to encrypt the API key saved in Settings (AES-256-GCM, key derived with HKDF). **Recommended.** If empty, a random one is generated into `data/secret.key` and a warning is logged. |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | *(empty)* | Create the admin on first start instead of using the setup page (no setup code needed). Ignored once a user exists. |
 | `COOKIE_SECURE` | `auto` | `Secure` flag of the session cookie: `auto` (when HTTPS is detected), `true`, `false`. |
-| `TRUST_PROXY` | `false` | Trust `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Host` from a reverse proxy. |
+| `TRUST_PROXY` | `false` | **Set to `true` behind a reverse proxy** (or to the number of proxies in front of the app). Then `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host` are trusted. See [Reverse proxy](#reverse-proxy). |
 | `SESSION_DAYS` | `30` | Session lifetime. |
 | `PORT` / `HOST` | `3000` / `0.0.0.0` | Listen address inside the container. |
 | `DATA_DIR` | `/data` in Docker, `./data` otherwise | Where the SQLite database and `secret.key` live. |
@@ -86,9 +96,56 @@ When the map writes Markdown back, it uses a canonical form: `#` for the root, `
 
 The renderer sits behind a small interface (`src/web/src/mindmap/adapter.ts`), and the Markdown/tree conversion lives in `src/shared/`, so simple-mind-map could be replaced (for example with mind-elixir) by writing another adapter.
 
+## Reverse proxy
+
+Behind a reverse proxy, **`TRUST_PROXY=true` is required**. What it changes:
+
+- **Client IP** for login and setup-code rate limiting is read from `X-Forwarded-For`, counting `TRUST_PROXY` entries from the right (the address your proxy appended), so a client cannot dodge the limit by sending its own `X-Forwarded-For`. Without it, every visitor shares the proxy's IP and one attacker can lock everyone out for 15 minutes.
+- **Secure cookie**: with the default `COOKIE_SECURE=auto`, the session cookie gets the `Secure` flag when `X-Forwarded-Proto` is `https`.
+- **Same-origin check** compares the browser's `Origin` with `X-Forwarded-Host` (falls back to `Host`).
+
+When `TRUST_PROXY` is `false` (default), all `X-Forwarded-*` headers are ignored. Do not enable it when the port is reachable without the proxy, because then clients could forge those headers. Use `TRUST_PROXY=2` if there are two proxies (e.g. Cloudflare → nginx → app).
+
+Generation streams over Server-Sent Events, so turn off response buffering and allow long reads.
+
+**Caddy** (gets HTTPS certificates automatically; sets `X-Forwarded-*` and streams by default):
+
+```caddyfile
+mindmap.example.com {
+    reverse_proxy 127.0.0.1:3000 {
+        flush_interval -1
+    }
+}
+```
+
+**nginx**:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name mindmap.example.com;
+    # ssl_certificate / ssl_certificate_key ...
+
+    client_max_body_size 5m;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        # Server-Sent Events (streaming generation)
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+    }
+}
+```
+
 ## Backup and restore
 
-Everything is in `./data`: the SQLite database (`text2mindmap.db` plus `-wal`/`-shm` files) and `secret.key`.
+Everything is in `./data`: the SQLite database (`text2mindmap.db` plus `-wal`/`-shm` files), `secret.key` (only when `APP_SECRET` is not set) and, before the admin exists, `setup-code`.
 
 ```bash
 docker compose stop
@@ -96,15 +153,18 @@ tar czf text2mindmap-backup-$(date +%F).tgz data .env
 docker compose start
 ```
 
-Restore by putting `data/` (and `.env`) back and running `docker compose up -d`. Keep `secret.key` (or `APP_SECRET`) with the database: without it the API key saved in Settings cannot be decrypted (you can re-enter it).
+Restore by putting `data/` (and `.env`) back and running `docker compose up -d`.
+
+**When migrating to another machine, copy the whole `data/` directory, not just the database.** If `APP_SECRET` is not set, the encryption key was generated into `data/secret.key`; without that file the API key saved in Settings cannot be decrypted (the app then falls back to `LLM_API_KEY`, and you have to enter the key again). We recommend setting `APP_SECRET` in `.env` (`openssl rand -hex 32`) and keeping `.env` with your backups.
 
 ## Security notes
 
 - The API key is never returned by any endpoint. Responses only say whether a key is set. A key saved in Settings is encrypted at rest; a key in `LLM_API_KEY` stays in your environment.
-- Every API endpoint requires login except `/api/health`, `/api/setup` (only works while no user exists) and `/api/auth/login`. Without login, nobody can spend your LLM quota.
+- Every API endpoint requires login except `/api/health`, `/api/setup` and `/api/auth/login`. Without login, nobody can spend your LLM quota.
+- First-run setup needs a random one-time setup code (10 characters) that is only printed in the server log and stored in `data/setup-code` (mode 0600). It is compared in constant time, wrong codes are rate-limited, and the code is invalidated as soon as the admin exists. After that the setup endpoint is closed and there is no sign-up.
 - Passwords are hashed with scrypt. Sessions are random tokens (stored hashed) in an `HttpOnly`, `SameSite=Lax` cookie. Failed logins are rate-limited (10 per 15 minutes per IP).
 - State-changing requests must be JSON and same-origin (CSRF protection).
-- Serve it over HTTPS when it is reachable from the internet, and set `TRUST_PROXY=true` behind a proxy so rate limiting sees real client IPs.
+- Serve it over HTTPS when it is reachable from the internet, and set `TRUST_PROXY=true` behind a proxy (see [Reverse proxy](#reverse-proxy)).
 - The LLM receives the text you paste. Use a provider you trust with it.
 
 ## Development

@@ -10,8 +10,16 @@ services:
     environment:
       DATA_DIR: /data
     ports:
-      # Only reachable from this machine by default. Put a reverse proxy with HTTPS in front,
-      # or change to "3000:3000" to expose it directly.
+      # Only reachable from this machine by default. Put a reverse proxy with HTTPS in front
+      # (and set TRUST_PROXY=true), or set BIND_ADDRESS=0.0.0.0 to expose the port directly.
       - "${BIND_ADDRESS:-127.0.0.1}:${HOST_PORT:-3000}:3000"
+    # Lets the app reach model servers on the Docker host, e.g. http://host.docker.internal:11434/v1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

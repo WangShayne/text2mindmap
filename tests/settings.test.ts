@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { makeApp } from './helpers'
+import { CODE, makeApp } from './helpers'
 import { getSetting } from '../src/server/db'
 // @ts-expect-error plain JS helper
 import { MOCK_KEY, MOCK_MODEL, startMockLlm } from '../scripts/mock-llm.mjs'
@@ -27,7 +27,7 @@ async function allResponses(req: ReturnType<typeof makeApp>['req'], docId: strin
 describe('settings and secret handling', () => {
   it('never returns the API key from any endpoint (env key and stored key)', async () => {
     const { req, db } = makeApp({ llmBaseUrl: 'http://127.0.0.1:1/v1', llmApiKey: ENV_KEY })
-    await req('POST', '/api/setup', { username: 'admin', password: 'password123' })
+    await req('POST', '/api/setup', { username: 'admin', password: 'password123', setupCode: CODE })
     const doc = (await (await req('POST', '/api/docs', { title: 't' })).json()).doc
     for (const line of await allResponses(req, doc.id)) expect(line).not.toContain(ENV_KEY)
 
@@ -51,7 +51,7 @@ describe('settings and secret handling', () => {
 
   it('does not leak a key echoed back by the upstream error', async () => {
     const { req } = makeApp({ llmBaseUrl: mock.url, llmApiKey: 'sk-wrong-key-zzz', llmModel: MOCK_MODEL })
-    await req('POST', '/api/setup', { username: 'admin', password: 'password123' })
+    await req('POST', '/api/setup', { username: 'admin', password: 'password123', setupCode: CODE })
     const r = await (await req('POST', '/api/settings/test', {})).json()
     expect(r).toMatchObject({ ok: false, code: 'auth' })
     expect(JSON.stringify(r)).not.toContain('sk-wrong-key-zzz')
@@ -59,7 +59,7 @@ describe('settings and secret handling', () => {
 
   it('test connection reports specific errors', async () => {
     const { req } = makeApp({ llmBaseUrl: mock.url, llmApiKey: MOCK_KEY, llmModel: MOCK_MODEL })
-    await req('POST', '/api/setup', { username: 'admin', password: 'password123' })
+    await req('POST', '/api/setup', { username: 'admin', password: 'password123', setupCode: CODE })
     const t = async (b: object) => (await req('POST', '/api/settings/test', b)).json()
     expect(await t({})).toMatchObject({ ok: true, models: 2 })
     expect(await t({ apiKey: 'sk-bad' })).toMatchObject({ ok: false, code: 'auth' })
@@ -70,7 +70,7 @@ describe('settings and secret handling', () => {
 
   it('system prompt can be edited and reset; settings are admin-only', async () => {
     const { req, db } = makeApp()
-    await req('POST', '/api/setup', { username: 'admin', password: 'password123' })
+    await req('POST', '/api/setup', { username: 'admin', password: 'password123', setupCode: CODE })
     let v = await (await req('PUT', '/api/settings', { systemPrompt: 'Custom prompt' })).json()
     expect(v).toMatchObject({ systemPrompt: 'Custom prompt', systemPromptIsDefault: false })
     v = await (await req('PUT', '/api/settings', { resetSystemPrompt: true })).json()

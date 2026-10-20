@@ -28,20 +28,30 @@ cp .env.example .env        # 填 LLM_BASE_URL、LLM_API_KEY、LLM_MODEL（也�
 docker compose up -d --build
 ```
 
-打开 <http://127.0.0.1:3000>。首次启动会显示一次性的初始化页面，用来创建管理员账号（也可以在 `.env` 里设置 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 自动创建）。请尽快完成：管理员创建之前，任何能访问这个页面的人都可以抢先创建。
+打开 <http://127.0.0.1:3000> 创建管理员账号。初始化页面需要填写一个**一次性初始化码**，只有服务器管理员能在日志里看到：
 
-默认只绑定 `127.0.0.1`。对外提供服务时，请在前面加一层带 HTTPS 的反向代理（Caddy、nginx、Traefik），并设置 `TRUST_PROXY=true`；或者设置 `BIND_ADDRESS=0.0.0.0` 直接暴露端口。
+```bash
+docker compose logs text2mindmap | grep "SETUP CODE"   # 或者：cat data/setup-code
+```
+
+完成初始化之前，每次重启都会生成新的初始化码；管理员创建后，初始化码立即失效。输错初始化码有频率限制。也可以在 `.env` 里设置 `ADMIN_USERNAME` / `ADMIN_PASSWORD`，首次启动时自动创建管理员。
+
+默认只绑定 `127.0.0.1`。对外提供服务时，请在前面加一层带 HTTPS 的反向代理（见[反向代理](#反向代理)），或者设置 `BIND_ADDRESS=0.0.0.0` 直接暴露端口。
 
 镜像由 `Dockerfile` 在本地构建（多阶段构建，运行镜像里只有 Node 和打包好的程序，约 170 MB），目前没有发布预构建镜像。
 
 ### 调用宿主机上的模型
 
-容器里的 `localhost` 指的是容器自己。要访问宿主机上的模型服务（比如 11434 端口的 Ollama），在 `docker-compose.yml` 的服务下加上下面的配置，然后用 `http://host.docker.internal:11434/v1`：
+容器里的 `localhost` 指的是容器自己。要访问宿主机上的模型服务（Ollama、New API、one-api、LM Studio 等），请用 `http://host.docker.internal:<端口>/v1`，例如：
 
-```yaml
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+```env
+LLM_BASE_URL=http://host.docker.internal:11434/v1   # Ollama
+LLM_BASE_URL=http://host.docker.internal:3001/v1    # 3001 端口上的 New API / one-api
 ```
+
+`docker-compose.yml` 已经默认把 `host.docker.internal` 指向宿主机（`extra_hosts: host-gateway`）。模型服务要监听容器能访问到的地址（Ollama 需要设置 `OLLAMA_HOST=0.0.0.0`），不能只监听 `127.0.0.1`。
+
+容器日志使用 `json-file` 驱动，单个文件最大 10 MB，最多保留 3 个。
 
 ## 配置项
 
@@ -56,10 +66,10 @@ docker compose up -d --build
 | `LLM_TIMEOUT_MS` | `180000` | 单次模型请求的超时时间。 |
 | `LLM_CHUNK_CHARS` | `12000` | 超过这个字数的文本会分段整理再合并。 |
 | `MAX_INPUT_CHARS` | `200000` | 单次最多接受的输入字数。 |
-| `APP_SECRET` | 自动生成 | 用来加密「设置」里保存的 API Key（AES-256-GCM，密钥用 HKDF 派生）。不填时会随机生成并保存到 `data/secret.key`，同时在日志里给出警告。 |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 空 | 首次启动时直接创建管理员，不用初始化页面。已有用户后忽略。 |
+| `APP_SECRET` | 自动生成 | 用来加密「设置」里保存的 API Key（AES-256-GCM，密钥用 HKDF 派生）。**建议设置。** 不填时会随机生成并保存到 `data/secret.key`，同时在日志里给出警告。 |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 空 | 首次启动时直接创建管理员，不用初始化页面，也不需要初始化码。已有用户后忽略。 |
 | `COOKIE_SECURE` | `auto` | 会话 Cookie 的 `Secure` 标记：`auto`（检测到 HTTPS 时开启）、`true`、`false`。 |
-| `TRUST_PROXY` | `false` | 信任反向代理传来的 `X-Forwarded-For` / `X-Forwarded-Proto` / `X-Forwarded-Host`。 |
+| `TRUST_PROXY` | `false` | **放在反向代理后面时必须设为 `true`**（或者设为前面代理的层数）。开启后信任 `X-Forwarded-For`、`X-Forwarded-Proto`、`X-Forwarded-Host`。见[反向代理](#反向代理)。 |
 | `SESSION_DAYS` | `30` | 登录有效天数。 |
 | `PORT` / `HOST` | `3000` / `0.0.0.0` | 容器内的监听地址。 |
 | `DATA_DIR` | Docker 里是 `/data`，否则是 `./data` | SQLite 数据库和 `secret.key` 的存放目录。 |
@@ -86,9 +96,56 @@ Markdown 是唯一的数据源。导图始终由 Markdown 生成，在导图上�
 
 导图渲染器被封装在一个小接口后面（`src/web/src/mindmap/adapter.ts`），Markdown 和树的互相转换在 `src/shared/` 里。以后想把 simple-mind-map 换成 mind-elixir 等其他库，只要再写一个适配器。
 
+## 反向代理
+
+放在反向代理后面时，**必须设置 `TRUST_PROXY=true`**。它的作用：
+
+- **客户端 IP**：登录和初始化码的频率限制从 `X-Forwarded-For` 里取 IP，从右往左数第 `TRUST_PROXY` 个（也就是你的代理追加的那个地址），客户端自己伪造的 `X-Forwarded-For` 绕不过限制。不开启的话，所有访客都显示成代理的 IP，一个人输错密码就可能把所有人锁住 15 分钟。
+- **Secure Cookie**：在默认的 `COOKIE_SECURE=auto` 下，`X-Forwarded-Proto` 为 `https` 时，会话 Cookie 会带上 `Secure` 标记。
+- **同源检查**：用浏览器的 `Origin` 和 `X-Forwarded-Host` 比较（没有时用 `Host`）。
+
+`TRUST_PROXY` 为 `false`（默认）时，所有 `X-Forwarded-*` 头都会被忽略。如果端口不经过代理也能直接访问，不要开启，否则客户端可以伪造这些头。有两层代理时（比如 Cloudflare → nginx → 应用）设为 `TRUST_PROXY=2`。
+
+生成过程用 Server-Sent Events 流式返回，代理要关闭响应缓冲，并允许较长的读取时间。
+
+**Caddy**（自动申请 HTTPS 证书，默认就会设置 `X-Forwarded-*`）：
+
+```caddyfile
+mindmap.example.com {
+    reverse_proxy 127.0.0.1:3000 {
+        flush_interval -1
+    }
+}
+```
+
+**nginx**：
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name mindmap.example.com;
+    # ssl_certificate / ssl_certificate_key ...
+
+    client_max_body_size 5m;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        # Server-Sent Events（流式生成）
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+    }
+}
+```
+
 ## 备份和恢复
 
-所有数据都在 `./data` 目录：SQLite 数据库（`text2mindmap.db` 以及 `-wal`、`-shm` 文件）和 `secret.key`。
+所有数据都在 `./data` 目录：SQLite 数据库（`text2mindmap.db` 以及 `-wal`、`-shm` 文件）、`secret.key`（只在没有设置 `APP_SECRET` 时存在），以及管理员创建之前的 `setup-code`。
 
 ```bash
 docker compose stop
@@ -96,15 +153,18 @@ tar czf text2mindmap-backup-$(date +%F).tgz data .env
 docker compose start
 ```
 
-恢复时把 `data/`（和 `.env`）放回原处，再执行 `docker compose up -d`。`secret.key`（或 `APP_SECRET`）要和数据库一起保存：没有它，「设置」里保存的 API Key 就解不开了（重新填一次即可）。
+恢复时把 `data/`（和 `.env`）放回原处，再执行 `docker compose up -d`。
+
+**迁移到另一台机器时，请复制整个 `data/` 目录，而不只是数据库文件。** 没有设置 `APP_SECRET` 时，加密密钥是自动生成在 `data/secret.key` 里的；缺了这个文件，「设置」里保存的 API Key 就无法解密（程序会退回使用 `LLM_API_KEY`，需要重新填写 Key）。建议在 `.env` 里设置 `APP_SECRET`（`openssl rand -hex 32`），并把 `.env` 和备份放在一起。
 
 ## 安全说明
 
 - 任何接口都不会返回 API Key，只会告诉前端「是否已设置」。在「设置」里保存的 Key 加密存储；写在 `LLM_API_KEY` 里的 Key 只存在于你的环境变量中。
-- 除了 `/api/health`、`/api/setup`（只在还没有用户时可用）和 `/api/auth/login`，所有接口都要登录，别人拿到地址也用不了你的模型额度。
+- 除了 `/api/health`、`/api/setup` 和 `/api/auth/login`，所有接口都要登录，别人拿到地址也用不了你的模型额度。
+- 首次初始化需要一个随机的一次性初始化码（10 位），只打印在服务日志里，并保存在 `data/setup-code`（权限 0600）。比对使用恒定时间算法，输错有频率限制，管理员创建后立即失效。之后初始化接口关闭，也不开放注册。
 - 密码用 scrypt 哈希。会话是随机令牌（数据库里只存哈希），放在 `HttpOnly`、`SameSite=Lax` 的 Cookie 里。登录失败有频率限制（每个 IP 15 分钟内最多 10 次）。
 - 修改数据的请求必须是 JSON 且同源（防 CSRF）。
-- 对公网开放时请使用 HTTPS；放在反向代理后面时设置 `TRUST_PROXY=true`，频率限制才能拿到真实 IP。
+- 对公网开放时请使用 HTTPS；放在反向代理后面时设置 `TRUST_PROXY=true`（见[反向代理](#反向代理)）。
 - 你粘贴的文本会发给模型服务商，请选择你信得过的服务。
 
 ## 开发

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { makeApp } from './helpers'
+import { CODE, makeApp } from './helpers'
 import { hashPassword, verifyPassword } from '../src/server/passwords'
 
 describe('passwords', () => {
@@ -14,17 +14,17 @@ describe('passwords', () => {
 describe('setup and login', () => {
   it('first-run setup creates the admin once, then is closed', async () => {
     const { req, setCookie } = makeApp()
-    expect(await (await req('GET', '/api/setup')).json()).toEqual({ needsSetup: true })
+    expect(await (await req('GET', '/api/setup')).json()).toEqual({ needsSetup: true, requiresCode: true })
     expect((await req('GET', '/api/docs')).status).toBe(401)
-    const r = await req('POST', '/api/setup', { username: 'admin', password: 'password123' })
+    const r = await req('POST', '/api/setup', { username: 'admin', password: 'password123', setupCode: CODE })
     expect(r.status).toBe(200)
     const sc = r.headers.get('set-cookie')!
     expect(sc).toMatch(/HttpOnly/i)
     expect(sc).toMatch(/SameSite=Lax/i)
     expect((await r.json()).user).toEqual({ id: 1, username: 'admin', isAdmin: true })
-    expect(await (await req('GET', '/api/setup')).json()).toEqual({ needsSetup: false })
+    expect(await (await req('GET', '/api/setup')).json()).toEqual({ needsSetup: false, requiresCode: true })
     setCookie('')
-    const again = await req('POST', '/api/setup', { username: 'evil', password: 'password123' })
+    const again = await req('POST', '/api/setup', { username: 'evil', password: 'password123', setupCode: CODE })
     expect(again.status).toBe(403)
     // there is no registration endpoint
     expect((await req('POST', '/api/auth/register', { username: 'evil', password: 'password123' })).status).toBe(401)
@@ -32,13 +32,13 @@ describe('setup and login', () => {
 
   it('validates credentials on setup', async () => {
     const { req } = makeApp()
-    expect((await req('POST', '/api/setup', { username: 'a', password: 'password123' })).status).toBe(400)
-    expect((await req('POST', '/api/setup', { username: 'admin', password: 'short' })).status).toBe(400)
+    expect((await req('POST', '/api/setup', { username: 'a', password: 'password123', setupCode: CODE })).status).toBe(400)
+    expect((await req('POST', '/api/setup', { username: 'admin', password: 'short', setupCode: CODE })).status).toBe(400)
   })
 
   it('logs in, reads /me, logs out', async () => {
     const { req, setCookie } = makeApp()
-    await req('POST', '/api/setup', { username: 'admin', password: 'password123' })
+    await req('POST', '/api/setup', { username: 'admin', password: 'password123', setupCode: CODE })
     setCookie('')
     expect((await req('POST', '/api/auth/login', { username: 'admin', password: 'nope-nope' })).status).toBe(401)
     expect((await req('POST', '/api/auth/login', { username: 'ADMIN', password: 'password123' })).status).toBe(200)
@@ -49,7 +49,7 @@ describe('setup and login', () => {
 
   it('rate-limits failed logins', async () => {
     const { req, setCookie } = makeApp()
-    await req('POST', '/api/setup', { username: 'admin', password: 'password123' })
+    await req('POST', '/api/setup', { username: 'admin', password: 'password123', setupCode: CODE })
     setCookie('')
     for (let i = 0; i < 10; i++) expect((await req('POST', '/api/auth/login', { username: 'admin', password: 'bad-password' })).status).toBe(401)
     const blocked = await req('POST', '/api/auth/login', { username: 'admin', password: 'password123' })
@@ -59,7 +59,7 @@ describe('setup and login', () => {
 
   it('changes the password and invalidates other sessions', async () => {
     const { req, setCookie, getCookie } = makeApp()
-    await req('POST', '/api/setup', { username: 'admin', password: 'password123' })
+    await req('POST', '/api/setup', { username: 'admin', password: 'password123', setupCode: CODE })
     const first = getCookie()
     await req('POST', '/api/auth/login', { username: 'admin', password: 'password123' })
     expect((await req('POST', '/api/auth/password', { current: 'password123', next: 'newpassword456' })).status).toBe(200)
@@ -70,7 +70,7 @@ describe('setup and login', () => {
 
   it('rejects non-JSON and cross-origin writes (CSRF)', async () => {
     const { app, req } = makeApp()
-    await req('POST', '/api/setup', { username: 'admin', password: 'password123' })
+    await req('POST', '/api/setup', { username: 'admin', password: 'password123', setupCode: CODE })
     const form = await app.request('/api/docs', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'title=x' })
     expect(form.status).toBe(415)
     const xo = await req('POST', '/api/docs', { title: 'x' }, { origin: 'https://evil.example', host: 'localhost' })
@@ -81,7 +81,7 @@ describe('setup and login', () => {
 describe('documents', () => {
   it('CRUD scoped to the owner', async () => {
     const { req, db } = makeApp()
-    await req('POST', '/api/setup', { username: 'admin', password: 'password123' })
+    await req('POST', '/api/setup', { username: 'admin', password: 'password123', setupCode: CODE })
     const created = await (await req('POST', '/api/docs', { title: '我的导图' })).json()
     const id = created.doc.id
     expect(created.doc.markdown).toBe('# 我的导图\n')

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { serve } from '@hono/node-server'
-import { makeApp, parseSse } from './helpers'
+import { CODE, makeApp, parseSse } from './helpers'
 import { splitText } from '../src/server/chunk'
 import { ThinkFilter } from '../src/server/llm'
 import { parseMarkdown, countNodes } from '../src/shared/outline'
@@ -23,7 +23,7 @@ const ARTICLE = `人工智能的发展历程。人工智能经历了多次起伏
 
 async function setup(over = {}) {
   const t = makeApp({ llmBaseUrl: mock.url, llmApiKey: MOCK_KEY, llmModel: MOCK_MODEL, ...over })
-  await t.req('POST', '/api/setup', { username: 'admin', password: 'password123' })
+  await t.req('POST', '/api/setup', { username: 'admin', password: 'password123', setupCode: CODE })
   return t
 }
 
