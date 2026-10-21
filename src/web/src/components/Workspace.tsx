@@ -35,7 +35,7 @@ const isDefaultTitle = (s: string) => !s || s === 'Untitled' || s === '未命名
 export function Workspace({ doc, onMetaChange, settings, onImport, onImportDoc, onAbout, onToggleNav, isAdmin, onOpenSettings, mapStyle = DEFAULT_MAP_STYLE, onMapStyleChange }: {
   doc: Doc
   onMetaChange: (d: Partial<Doc> & { id: string }) => void
-  settings: { chunkChars: number; maxInputChars: number; configured: boolean; asr?: { configured: boolean; segmentSeconds: number } }
+  settings: { chunkChars: number; maxInputChars: number; configured: boolean; asr?: { configured: boolean; segmentSeconds: number; realtime?: boolean; realtimeTwoPass?: boolean } }
   onImport: () => void
   /** Creates a new document from imported Markdown (used when the current one is not empty). */
   onImportDoc?: (title: string, markdown: string) => Promise<void>

@@ -12,6 +12,8 @@ import { RateLimiter, SESSION_COOKIE, createFirstUser, createSession, deleteSess
 import { hashPassword, validateCredentials, verifyPassword } from './passwords'
 import { LlmError, listModels, testConnection, type LlmConfig } from './llm'
 import { DEFAULT_SYSTEM_PROMPT } from './prompts'
+import { RK, effectiveRealtime, testRealtime } from './realtime'
+import { normalizeRealtimeUrl } from './config'
 import { expandNode, generateOutline, type GenEvent } from './generate'
 import { parseMarkdown, type OutlineNode } from '../shared/outline'
 import { APP_NAME } from '../shared/brand'
@@ -371,6 +373,14 @@ export function createApp(deps: AppDeps) {
           maxUploadMb: Math.round(config.asrMaxBytes / 1024 / 1024),
         }
       })(),
+      realtime: (() => {
+        const r = effectiveRealtime(deps)
+        return {
+          url: r.url, twoPass: r.twoPass, hasApiKey: !!r.apiKey, maxSeconds: r.maxSeconds, idleSeconds: Math.round(r.idleMs / 1000), maxSessions: r.maxSessions,
+          env: { url: config.asrRealtimeUrl, twoPass: config.asrRealtimeTwoPass },
+          overrides: { url: getSetting(db, RK.url) !== undefined, twoPass: getSetting(db, RK.twoPass) !== undefined },
+        }
+      })(),
     }
   }
   app.get('/api/settings', adminOnly, (c) => c.json(settingsView()))
@@ -378,9 +388,14 @@ export function createApp(deps: AppDeps) {
   app.get('/api/settings/public', (c) => {
     const l = effectiveLlm(deps)
     const a = effectiveAsr(deps)
+    const rt = effectiveRealtime(deps)
     return c.json({
       model: l.model, configured: !!l.baseUrl && !!l.model, maxInputChars: config.maxInputChars, chunkChars: config.llmChunkChars,
-      asr: { configured: !!a.baseUrl && !!a.model, segmentSeconds: a.segmentSeconds, maxUploadBytes: config.asrMaxBytes },
+      asr: {
+        configured: !!a.baseUrl && !!a.model, segmentSeconds: a.segmentSeconds, maxUploadBytes: config.asrMaxBytes,
+        // Live captions need both: the realtime server for captions and the segmented model as fallback.
+        realtime: !!rt.url && !!a.baseUrl && !!a.model, realtimeTwoPass: rt.twoPass,
+      },
     })
   })
 
@@ -410,6 +425,16 @@ export function createApp(deps: AppDeps) {
       if (b.asrSegmentSeconds === null || b.asrSegmentSeconds === '') setSetting(db, K.asrSegment, null)
       else if (!Number.isFinite(n) || n <= 0) return c.json({ error: 'Max segment length must be a number of seconds' }, 400)
       else { const v = clampSegmentSeconds(n); setSetting(db, K.asrSegment, v !== config.asrSegmentSeconds ? String(v) : null) }
+    }
+    if (b.asrRealtimeUrl !== undefined) {
+      const v = b.asrRealtimeUrl === null ? '' : normalizeRealtimeUrl(String(b.asrRealtimeUrl))
+      if (v === undefined) return c.json({ error: 'Realtime ASR address must start with ws://, wss://, http:// or https://' }, 400)
+      // Stored as typed (normalized); equal to the env default = not stored. '' while env has a URL = explicitly off.
+      setSetting(db, RK.url, v === config.asrRealtimeUrl ? null : v || (config.asrRealtimeUrl ? 'off' : null))
+    }
+    if (b.asrRealtimeTwoPass !== undefined) {
+      if (b.asrRealtimeTwoPass === null) setSetting(db, RK.twoPass, null)
+      else { const v = b.asrRealtimeTwoPass === true || b.asrRealtimeTwoPass === 'true'; setSetting(db, RK.twoPass, v === config.asrRealtimeTwoPass ? null : String(v)) }
     }
     if (b.resetSystemPrompt === true) setSetting(db, K.prompt, null)
     else if (typeof b.systemPrompt === 'string') {
@@ -448,6 +473,15 @@ export function createApp(deps: AppDeps) {
     const cfg = asrFromForm(await c.req.json().catch(() => ({})))
     if (cfg instanceof Response) return cfg
     return c.json(await testAsr(cfg))
+  })
+  app.post('/api/settings/asr/realtime/test', adminOnly, async (c) => {
+    const b = await c.req.json().catch(() => ({}))
+    const typed = typeof b.url === 'string' ? normalizeRealtimeUrl(b.url) : ''
+    if (typed === undefined) return c.json({ ok: false, code: 'bad_url', message: 'Realtime ASR address must start with ws://, wss://, http:// or https://' })
+    const r = effectiveRealtime(deps)
+    const url = typed || r.url
+    if (!url) return c.json({ ok: false, code: 'not_configured', message: 'No realtime ASR address.' })
+    return c.json(await testRealtime(url, r.apiKey))
   })
   app.post('/api/settings/asr/models', adminOnly, async (c) => {
     const cfg = asrFromForm(await c.req.json().catch(() => ({})))

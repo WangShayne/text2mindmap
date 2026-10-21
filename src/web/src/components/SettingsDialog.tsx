@@ -11,6 +11,7 @@ interface SettingsView {
   systemPromptIsDefault: boolean
   defaultSystemPrompt: string
   asr: { baseUrl: string; model: string; hasApiKey: boolean; keySource: 'settings' | 'env' | 'none'; segmentSeconds: number; env: { baseUrl: string; model: string; hasApiKey: boolean; segmentSeconds: number }; maxUploadMb: number }
+  realtime: { url: string; twoPass: boolean; hasApiKey: boolean; maxSeconds: number; idleSeconds: number; maxSessions: number; env: { url: string; twoPass: boolean } }
 }
 
 export function SettingsDialog({ me, onClose, focus }: { me: Me; onClose: () => void; focus?: 'asr' }) {
@@ -26,11 +27,14 @@ export function SettingsDialog({ me, onClose, focus }: { me: Me; onClose: () => 
   const [asr, setAsr] = useState({ baseUrl: '', model: '', apiKey: '', segmentSeconds: '28' })
   const [asrMsg, setAsrMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [asrTesting, setAsrTesting] = useState(false)
+  const [rt, setRt] = useState({ url: '', twoPass: true })
+  const [rtMsg, setRtMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [rtTesting, setRtTesting] = useState(false)
   const [pw, setPw] = useState({ current: '', next: '' })
   const [pwMsg, setPwMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   const load = (v: SettingsView) => { setView(v); setBaseUrl(v.llm.baseUrl); setModel(v.llm.model); setPrompt(v.systemPrompt); setApiKey('') }
-  const loadAsr = (v: SettingsView) => { setView(v); setAsr({ baseUrl: v.asr.baseUrl, model: v.asr.model, apiKey: '', segmentSeconds: String(v.asr.segmentSeconds) }) }
+  const loadAsr = (v: SettingsView) => { setView(v); setAsr({ baseUrl: v.asr.baseUrl, model: v.asr.model, apiKey: '', segmentSeconds: String(v.asr.segmentSeconds) }); setRt({ url: v.realtime.url, twoPass: v.realtime.twoPass }) }
   useEffect(() => { if (me.isAdmin) api<SettingsView>('GET', '/api/settings').then((v) => { load(v); loadAsr(v) }).catch((e) => setMsg({ ok: false, text: e.message })) }, [me.isAdmin])
 
   const save = async (extra: Record<string, unknown> = {}) => {
@@ -55,7 +59,7 @@ export function SettingsDialog({ me, onClose, focus }: { me: Me; onClose: () => 
   }, [focus, view])
   const saveAsr = async (extra: Record<string, unknown> = {}) => {
     try {
-      const v = await api<SettingsView>('PUT', '/api/settings', { asrBaseUrl: asr.baseUrl, asrModel: asr.model, asrSegmentSeconds: asr.segmentSeconds, ...(asr.apiKey ? { asrApiKey: asr.apiKey } : {}), ...extra })
+      const v = await api<SettingsView>('PUT', '/api/settings', { asrBaseUrl: asr.baseUrl, asrModel: asr.model, asrSegmentSeconds: asr.segmentSeconds, asrRealtimeUrl: rt.url, asrRealtimeTwoPass: rt.twoPass, ...(asr.apiKey ? { asrApiKey: asr.apiKey } : {}), ...extra })
       loadAsr(v)
       setAsrMsg({ ok: true, text: t('settingsSaved') })
     } catch (e) { setAsrMsg({ ok: false, text: (e as Error).message }) }
@@ -66,6 +70,13 @@ export function SettingsDialog({ me, onClose, focus }: { me: Me; onClose: () => 
       const r = await api<{ ok: boolean; text?: string; code?: string; message?: string; latencyMs?: number }>('POST', '/api/settings/asr/test', { baseUrl: asr.baseUrl, model: asr.model, apiKey: asr.apiKey })
       setAsrMsg(r.ok ? { ok: true, text: t('asrTestOk', { ms: r.latencyMs ?? 0, text: r.text ? `「${r.text.slice(0, 40)}」` : t('asrTestEmpty') }) } : { ok: false, text: `[${r.code}] ${r.message}` })
     } catch (e) { setAsrMsg({ ok: false, text: (e as Error).message }) } finally { setAsrTesting(false) }
+  }
+  const testRt = async () => {
+    setRtTesting(true); setRtMsg(null)
+    try {
+      const r = await api<{ ok: boolean; code?: string; message: string; latencyMs?: number }>('POST', '/api/settings/asr/realtime/test', { url: rt.url })
+      setRtMsg(r.ok ? { ok: true, text: t('rtTestOk', { ms: r.latencyMs ?? 0 }) } : { ok: false, text: `[${r.code}] ${r.message}` })
+    } catch (e) { setRtMsg({ ok: false, text: (e as Error).message }) } finally { setRtTesting(false) }
   }
   const changePw = async () => {
     try { await api('POST', '/api/auth/password', pw); setPw({ current: '', next: '' }); setPwMsg({ ok: true, text: t('passwordChanged') }) } catch (e) { setPwMsg({ ok: false, text: (e as Error).message }) }
@@ -117,6 +128,16 @@ export function SettingsDialog({ me, onClose, focus }: { me: Me; onClose: () => 
               <span className="row gap"><input type="number" min={5} max={600} step={1} className="num" value={asr.segmentSeconds} onChange={(e) => setAsr({ ...asr, segmentSeconds: e.target.value })} /> <span className="muted">{t('seconds')}</span></span>
             </label>
             <div className="hint">{t('asrSegmentHint', { mb: view.asr.maxUploadMb })}</div>
+            <h4 className="section-gap">{t('rtSection')}</h4>
+            <div className="hint">{t('rtSectionHint')}</div>
+            <label>{t('rtUrl')}<input data-testid="rt-url" value={rt.url} onChange={(e) => setRt({ ...rt, url: e.target.value })} placeholder="ws://sensevoice:8040/v1/realtime?intent=transcription" /></label>
+            {view.realtime.env.url && <div className="hint">{t('envDefault', { v: view.realtime.env.url })}</div>}
+            <label className="checkbox-row"><input type="checkbox" data-testid="rt-two-pass" checked={rt.twoPass} onChange={(e) => setRt({ ...rt, twoPass: e.target.checked })} /> {t('rtTwoPass')}</label>
+            <div className="hint">{t('rtTwoPassHint')}</div>
+            <div className="row gap">
+              <button className="btn" data-testid="rt-test" onClick={testRt} disabled={rtTesting || !rt.url.trim()}>{rtTesting ? t('testing') : t('testConnection')}</button>
+            </div>
+            {rtMsg && <div className={rtMsg.ok ? 'ok-msg' : 'error'} data-testid="rt-msg">{rtMsg.text}</div>}
             <div className="row gap">
               <button className="btn primary" data-testid="asr-save" onClick={() => saveAsr()}>{t('save')}</button>
               <button className="btn" data-testid="asr-test" onClick={testAsr} disabled={asrTesting}>{asrTesting ? t('testing') : t('testConnection')}</button>

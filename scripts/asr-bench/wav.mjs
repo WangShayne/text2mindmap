@@ -90,10 +90,82 @@ function joinTranscript(a, b) {
   if (!x) return y;
   return CJK.test(x.slice(-1)) || CJK.test(y[0]) ? x + y : `${x} ${y}`;
 }
+class StreamResampler {
+  constructor(fromRate, toRate = ASR_SAMPLE_RATE) {
+    this.fromRate = fromRate;
+    this.toRate = toRate;
+    this.ratio = fromRate / toRate;
+  }
+  fromRate;
+  toRate;
+  buf = new Float32Array(0);
+  /** Absolute input index of buf[0]. */
+  base = 0;
+  /** Next output index. */
+  j = 0;
+  ratio;
+  push(input) {
+    if (this.fromRate === this.toRate) return input;
+    if (this.ratio < 1) return resample(input, this.fromRate, this.toRate);
+    const all = new Float32Array(this.buf.length + input.length);
+    all.set(this.buf);
+    all.set(input, this.buf.length);
+    const end = this.base + all.length;
+    const out = [];
+    for (; ; ) {
+      const a = Math.floor(this.j * this.ratio), b = Math.max(a + 1, Math.floor((this.j + 1) * this.ratio));
+      if (b > end) break;
+      let s = 0;
+      for (let k = a; k < b; k++) s += all[k - this.base];
+      out.push(s / (b - a));
+      this.j++;
+    }
+    const keep = Math.floor(this.j * this.ratio);
+    this.buf = all.slice(keep - this.base);
+    this.base = keep;
+    return Float32Array.from(out);
+  }
+}
+function floatToPcm16(samples) {
+  const out = new Uint8Array(samples.length * 2);
+  const v = new DataView(out.buffer);
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    v.setInt16(i * 2, s < 0 ? Math.round(s * 32768) : Math.round(s * 32767), true);
+  }
+  return out;
+}
+class PcmFramer {
+  constructor(frameBytes = 3200, onFrame) {
+    this.frameBytes = frameBytes;
+    this.onFrame = onFrame;
+  }
+  frameBytes;
+  onFrame;
+  buf = new Uint8Array(0);
+  push(pcm) {
+    const all = new Uint8Array(this.buf.length + pcm.length);
+    all.set(this.buf);
+    all.set(pcm, this.buf.length);
+    let o = 0;
+    for (; o + this.frameBytes <= all.length; o += this.frameBytes) this.onFrame(all.slice(o, o + this.frameBytes));
+    this.buf = all.slice(o);
+  }
+  /** Sends what is left (shorter than a frame). */
+  flush() {
+    if (this.buf.length) {
+      this.onFrame(this.buf);
+      this.buf = new Uint8Array(0);
+    }
+  }
+}
 export {
   ASR_SAMPLE_RATE,
+  PcmFramer,
+  StreamResampler,
   downmix,
   encodeWav,
+  floatToPcm16,
   joinTranscript,
   planSegments,
   quietestPoint,

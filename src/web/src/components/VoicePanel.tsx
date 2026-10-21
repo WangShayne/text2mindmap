@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useI18n } from '../i18n'
 import { appendPiece, fmtClock, useTranscriber, type AsrPublic } from '../audio/useTranscriber'
-import { AsrOffHint, LangSelect } from './VoiceInput'
+import { AsrOffHint, LangSelect, LiveCaptionsView, VoiceNotice } from './VoiceInput'
 import { Placement, type GenRequest } from './GenerateDialog'
 import type { Selection } from '../mindmap/adapter'
 
@@ -93,7 +93,9 @@ export function VoicePanel({ source, asr, selection, maxChars, isAdmin, onOpenSe
             placeholder={isMic ? t('voiceLivePlaceholder') : t('voiceFilePlaceholder')}
             ref={(el) => { if (el && !idle) el.scrollTop = el.scrollHeight }}
             onChange={(e) => setText(e.target.value)} />
+          {(state.kind === 'recording' || state.kind === 'finishing') && <LiveCaptionsView captions={v.captions} live={v.live} />}
           {v.error && <div className="error small" data-testid="asr-error">{v.error}</div>}
+          <VoiceNotice text={v.notice} onDismiss={v.dismissNotice} />
           {idle && (
             <div className="vp-foot">
               <Placement selection={selection} value={place} onChange={setPlace} />

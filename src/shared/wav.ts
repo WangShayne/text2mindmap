@@ -98,3 +98,65 @@ export function joinTranscript(a: string, b: string): string {
   if (!x) return y
   return CJK.test(x.slice(-1)) || CJK.test(y[0]) ? x + y : `${x} ${y}`
 }
+
+/**
+ * Streaming version of resample() for live audio arriving in chunks. Down-sampling produces exactly
+ * the samples resample() would give for the concatenated input (same box filter, no seams between
+ * chunks). Up-sampling (rare: a mic below 16 kHz) uses linear interpolation per chunk.
+ */
+export class StreamResampler {
+  private buf = new Float32Array(0)
+  /** Absolute input index of buf[0]. */
+  private base = 0
+  /** Next output index. */
+  private j = 0
+  private readonly ratio: number
+  constructor(private fromRate: number, private toRate = ASR_SAMPLE_RATE) { this.ratio = fromRate / toRate }
+
+  push(input: Float32Array): Float32Array {
+    if (this.fromRate === this.toRate) return input
+    if (this.ratio < 1) return resample(input, this.fromRate, this.toRate)
+    const all = new Float32Array(this.buf.length + input.length)
+    all.set(this.buf); all.set(input, this.buf.length)
+    const end = this.base + all.length
+    const out: number[] = []
+    for (;;) {
+      const a = Math.floor(this.j * this.ratio), b = Math.max(a + 1, Math.floor((this.j + 1) * this.ratio))
+      if (b > end) break
+      let s = 0
+      for (let k = a; k < b; k++) s += all[k - this.base]
+      out.push(s / (b - a))
+      this.j++
+    }
+    const keep = Math.floor(this.j * this.ratio)
+    this.buf = all.slice(keep - this.base)
+    this.base = keep
+    return Float32Array.from(out)
+  }
+}
+
+/** Float samples in [-1, 1] to 16-bit little-endian PCM bytes. */
+export function floatToPcm16(samples: Float32Array): Uint8Array<ArrayBuffer> {
+  const out = new Uint8Array(samples.length * 2)
+  const v = new DataView(out.buffer)
+  for (let i = 0; i < samples.length; i++) {
+    const s = Math.max(-1, Math.min(1, samples[i]))
+    v.setInt16(i * 2, s < 0 ? Math.round(s * 0x8000) : Math.round(s * 0x7fff), true)
+  }
+  return out
+}
+
+/** Collects PCM16 bytes and hands out fixed-size frames (100 ms at 16 kHz = 3200 bytes by default). */
+export class PcmFramer {
+  private buf: Uint8Array<ArrayBuffer> = new Uint8Array(0)
+  constructor(private frameBytes = 3200, private onFrame: (frame: Uint8Array<ArrayBuffer>) => void) {}
+  push(pcm: Uint8Array) {
+    const all = new Uint8Array(this.buf.length + pcm.length)
+    all.set(this.buf); all.set(pcm, this.buf.length)
+    let o = 0
+    for (; o + this.frameBytes <= all.length; o += this.frameBytes) this.onFrame(all.slice(o, o + this.frameBytes))
+    this.buf = all.slice(o)
+  }
+  /** Sends what is left (shorter than a frame). */
+  flush() { if (this.buf.length) { this.onFrame(this.buf); this.buf = new Uint8Array(0) } }
+}

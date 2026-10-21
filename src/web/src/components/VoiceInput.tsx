@@ -18,6 +18,26 @@ export function AsrOffHint({ isAdmin, onOpenSettings }: { isAdmin?: boolean; onO
   )
 }
 
+/** Live captions while recording: finals not yet replaced by the segmented text (grey) + the current partial. */
+export function LiveCaptionsView({ captions, live }: { captions: { done: string; partial: string }; live: boolean }) {
+  const { t } = useI18n()
+  if (!live && !captions.done && !captions.partial) return null
+  return (
+    <div className="live-captions" data-testid="live-captions" aria-live="polite" title={t('rtCaptionsHint')}>
+      <span className="live-badge">{t('rtLive')}</span>
+      {captions.done && <span className="cap-done">{captions.done}</span>}
+      {captions.partial && <span className="cap-partial">{captions.partial}</span>}
+      {!captions.done && !captions.partial && <span className="muted">{t('rtWaiting')}</span>}
+    </div>
+  )
+}
+
+/** Light, non-blocking notice (e.g. live captions fell back to segmented recognition). */
+export function VoiceNotice({ text, onDismiss }: { text: string; onDismiss: () => void }) {
+  if (!text) return null
+  return <div className="toast voice-toast" role="status" data-testid="rt-notice" onClick={onDismiss}>{text}</div>
+}
+
 export function LangSelect({ value, onChange, disabled }: { value: string; onChange: (v: string) => void; disabled?: boolean }) {
   const { t } = useI18n()
   return (
@@ -60,6 +80,7 @@ export function VoiceInput({ asr, onAppend, onBusy, isAdmin = false, onOpenSetti
             <span className="rec-time">{fmtClock((v.now - state.since) / 1000)}</span>
             <span className="level"><span style={{ width: `${Math.round(v.level * 100)}%` }} /></span>
             <span className="muted small">{state.pending ? t('asrPending', { n: state.pending }) : t('asrListening')}</span>
+            {v.live && <span className="live-badge" data-testid="rt-live">{t('rtLive')}</span>}
           </>
         ) : state.kind === 'finishing' ? (
           <><span className="spinner sm" /><span className="muted small">{t('asrFinishing', { n: state.pending })}</span></>
@@ -89,8 +110,10 @@ export function VoiceInput({ asr, onAppend, onBusy, isAdmin = false, onOpenSetti
         )}
         <input ref={fileRef} type="file" hidden accept={AUDIO_ACCEPT} onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void v.transcribeFile(f) }} />
       </div>
+      {(state.kind === 'recording' || state.kind === 'finishing') && <LiveCaptionsView captions={v.captions} live={v.live} />}
       {v.error && <div className="error small" data-testid="asr-error">{v.error}</div>}
       {!v.error && v.info && <div className="hint">{v.info}</div>}
+      <VoiceNotice text={v.notice} onDismiss={v.dismissNotice} />
     </div>
   )
 }

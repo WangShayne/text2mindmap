@@ -65,6 +65,16 @@ NETWORK=host BASE=http://127.0.0.1:18040/v1 ./run.sh
 
 模拟服务是按时间顺序“念”参考文本的，第一个文件 CER 会是 0%；第二个文件时它已经念完了，会返回空文本（CER 100%），这是模拟服务的限制，不是脚本的问题。
 
+## 实时字幕端到端（realtime-e2e.mjs）
+
+`realtime-e2e.mjs` 经过运行中的 text2mindmap 实例的 `/api/realtime`，把 16 kHz 单声道 16 位 WAV 按真实速度、每 100 ms 一帧推给真实的流式识别服务（如 sensevoice-server），报告首字延迟、临时字幕刷新间隔、停止到 `done` 的时间、段数和 CER，并打印关闭码。需要宿主机有 Node 22，在仓库根目录运行：
+
+```bash
+node scripts/asr-bench/realtime-e2e.mjs --base http://127.0.0.1:3000 --user admin --pass '…' \
+  --wav mix-5min.wav --ref mix-5min.ref.txt --out result.json
+# --seconds N 只推前 N 秒；--speed 2 两倍速；--drop-at S 第 S 秒直接断 TCP（测名额释放）；--silent-after S 第 S 秒后不再发音频（测空闲关闭 1001）
+```
+
 ## 维护
 
 `wav.mjs` 是由 `src/shared/wav.ts` 生成的 JS 副本（`node scripts/asr-bench/build-wav.mjs`），这样脚本不需要 TypeScript 就能跑。`tests/asr-bench.test.ts` 会检查它是否和源码一致。

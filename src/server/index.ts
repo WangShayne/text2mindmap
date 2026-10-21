@@ -6,7 +6,9 @@ import { serveStatic } from '@hono/node-server/serve-static'
 import { loadConfig } from './config'
 import { openDb } from './db'
 import { SecretBox, resolveAppSecret } from './secrets'
+import type { Server } from 'node:http'
 import { createApp } from './app'
+import { attachRealtime } from './realtime'
 import { createFirstUser, userCount } from './auth'
 import { validateCredentials } from './passwords'
 import { SetupCode } from './setupCode'
@@ -48,7 +50,9 @@ async function main() {
   }
 
   const server = serve({ fetch: app.fetch, port: config.port, hostname: config.host }, (i) => console.log(`[info] ${APP_NAME} ${version} listening on http://${config.host}:${i.port} (data: ${config.dataDir})`))
-  const shutdown = () => { server.close(); db.close(); process.exit(0) }
+  // WebSocket /api/realtime (live captions) is handled on the HTTP upgrade, outside Hono.
+  const realtime = attachRealtime(server as Server, { db, config, secretBox })
+  const shutdown = () => { realtime.close(); server.close(); db.close(); process.exit(0) }
   process.on('SIGINT', shutdown)
   process.on('SIGTERM', shutdown)
 }
