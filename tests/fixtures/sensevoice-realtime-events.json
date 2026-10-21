@@ -1,0 +1,154 @@
+[
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "哦。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "然后。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "然后呃。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "然后呃我也。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "然后呃我也喜欢。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "然后呃我也喜欢 play basketball。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "然后呃我也喜欢 play basketball，所以。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "然后呃我也喜欢play basketball，所以你平时。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "然后呃我也喜欢play basketball，所以你平时就。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "然后呃我也喜欢play basketball，所以你平时就现在。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "然后呃我也喜欢play basketball，所以你平时就现在大部分时间。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "然后呃我也喜欢play basketball，所以你平时就现在大部分时间还是。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "然后呃我也喜欢play basketball，所以你平时就现在大部分时间还是tennis就。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.completed",
+  "transcript": "然后呃我也喜欢play basketball，所以你平时就现在大部分时间还是tennis就打。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球，但是。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球，但是我觉得红。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球，但是我觉得红我看。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球，但是我觉得红过还蛮重要。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球，但是我觉得红过卡蛮重要的。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球，但是我觉得红过卡蛮重要的就是。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球，但是我觉得红过还蛮重要的，就是。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球，但是我觉得红过还蛮重要的，就是我觉得。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球，但是我觉得红过还蛮重要的，就是我觉得对我来说。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球，但是我觉得红过还蛮重要的，就是我觉得对我来说是一个。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球，但是我觉得红过还蛮重要的，就是我觉得对我来说是一个quitity的问题。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球，但是我觉得红过卡蛮重要的，就是我觉得对我来说是一个quitity的问题呃。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球，但是我觉得红过还蛮重要的，就是我觉得对我来说是一个quitity的问题。呃，对他。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球，但是我觉得红过还蛮重要的，就是我觉得对我来说是一个quity的问题。呃， datataanaly."
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球，但是我觉得红过还蛮重要的，就是我觉得对我来说是一个quitity的问题。呃， datataanaly或者是。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球，但是我觉得红过还蛮重要的，就是我觉得对我来说是一个quitity的问题。呃，dataanaly或者是呃对，就。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "网球，但是我觉得红过还蛮重要的，就是我觉得对我来说是一个quitity的问题。呃，data analyst或者是呃，对，就像刚你刚刚说的那。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.completed",
+  "transcript": "网球，但是我觉得红过卡蛮重要的，就是我觉得对我来说是一个quitity的问题。呃，dataana或者是呃对，就像刚你刚刚说的那些东西。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "啊。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "然后。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "然后刚忘了。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.delta",
+  "delta": "然后刚忘了讲。"
+ },
+ {
+  "type": "conversation.item.input_audio_transcription.completed",
+  "transcript": "然后刚忘了讲。"
+ }
+]

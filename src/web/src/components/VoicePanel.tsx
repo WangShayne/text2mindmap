@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useI18n } from '../i18n'
-import { appendPiece, fmtClock, useTranscriber, type AsrPublic } from '../audio/useTranscriber'
-import { AsrOffHint, LangSelect } from './VoiceInput'
+import { appendPiece, canRecord, fmtClock, useTranscriber, type AsrPublic } from '../audio/useTranscriber'
+import { AsrOffHint, LangSelect, LiveCaptionsView, VoiceNotice } from './VoiceInput'
 import { Placement, type GenRequest } from './GenerateDialog'
 import type { Selection } from '../mindmap/adapter'
 
@@ -28,8 +28,9 @@ export function VoicePanel({ source, asr, selection, maxChars, isAdmin, onOpenSe
   const onAppend = useCallback((piece: string, newBlock: boolean) => setText((prev) => appendPiece(prev, piece, newBlock)), [])
   const v = useTranscriber(asr, onAppend)
   const { state, mic } = v
-  const off = !asr.configured
   const isMic = source.kind === 'mic'
+  // The mic also works with live captions alone (single-pass); files need the segment model.
+  const off = isMic ? !canRecord(asr) : !asr.configured
   const micBlocked = isMic && mic !== 'ok'
 
   // Start immediately: this panel only opens from an explicit click on Record / Upload.
@@ -93,7 +94,9 @@ export function VoicePanel({ source, asr, selection, maxChars, isAdmin, onOpenSe
             placeholder={isMic ? t('voiceLivePlaceholder') : t('voiceFilePlaceholder')}
             ref={(el) => { if (el && !idle) el.scrollTop = el.scrollHeight }}
             onChange={(e) => setText(e.target.value)} />
+          {(state.kind === 'recording' || state.kind === 'finishing') && <LiveCaptionsView captions={v.captions} live={v.live} />}
           {v.error && <div className="error small" data-testid="asr-error">{v.error}</div>}
+          <VoiceNotice text={v.notice} onDismiss={v.dismissNotice} />
           {idle && (
             <div className="vp-foot">
               <Placement selection={selection} value={place} onChange={setPlace} />

@@ -1,0 +1,45 @@
+# Example override: self-hosted speech recognition next to text2mindmap, on the same Docker network.
+#   docker compose -f docker-compose.yml -f docker-compose.asr.yml up -d
+# Neither ASR container publishes a port: they have no authentication and are reached only by
+# text2mindmap over the compose network. Put the model files in ./models first:
+#   sensevoice-small-q8.gguf, fsmn-vad.gguf                         (SenseVoice, live captions)
+#   Qwen3-ASR-0.6B-Q8_0.gguf, mmproj-Qwen3-ASR-0.6B-Q8_0.gguf       (Qwen3-ASR, segment text)
+# and set in .env:
+#   ASR_BASE_URL=http://qwen3-asr:8080/v1
+#   ASR_MODEL=qwen3-asr-0.6b
+#   ASR_REALTIME_URL=ws://sensevoice:8040/v1/realtime?intent=transcription
+services:
+  sensevoice:
+    # There is no official image: build sensevoice-server yourself (a build with the realtime
+    # backlog / disconnect fix is recommended on small CPUs) and set SENSEVOICE_IMAGE.
+    image: ${SENSEVOICE_IMAGE:-sensevoice-server:local}
+    container_name: sensevoice
+    restart: unless-stopped
+    command: >-
+      -m /models/sensevoice-small-q8.gguf -vad /models/fsmn-vad.gguf
+      --threads 4 --max-connections 2 --max-audio-seconds 300 --ws-idle-timeout-s 60
+      0.0.0.0 8040
+    volumes:
+      - ./models:/models:ro
+    cpus: 4
+    mem_limit: 2g
+
+  qwen3-asr:
+    # Pin the llama.cpp version: its audio support is still experimental.
+    image: ghcr.io/ggml-org/llama.cpp:server-b11749
+    container_name: qwen3-asr
+    restart: unless-stopped
+    # -t 2: on a 6-core machine shared with SenseVoice live captions, 2 threads keep Qwen's RTF at
+    # about 0.36-0.40 (6 threads went up to 0.66-1.4 next to SenseVoice). Use -t 6 when Qwen is alone.
+    command: >-
+      -m /models/Qwen3-ASR-0.6B-Q8_0.gguf --mmproj /models/mmproj-Qwen3-ASR-0.6B-Q8_0.gguf
+      -t 2 -c 2048 -np 1 --cache-ram 0 --temp 0
+      --host 0.0.0.0 --port 8080
+    volumes:
+      - ./models:/models:ro
+    mem_limit: 2g
+
+  text2mindmap:
+    depends_on:
+      - sensevoice
+      - qwen3-asr

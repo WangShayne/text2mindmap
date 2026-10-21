@@ -100,6 +100,12 @@ LLM_BASE_URL=http://host.docker.internal:3001/v1    # 3001 端口上的 New API 
 | `ASR_SEGMENT_SECONDS` | `28` | 每次请求的最长音频时长（5–600 秒）。服务商限制 30 秒时保持 28 以内。 |
 | `ASR_TIMEOUT_MS` | `120000` | 单次识别请求的超时时间。 |
 | `ASR_MAX_UPLOAD_MB` | `25` | `/api/transcribe` 单次上传上限。 |
+| `ASR_REALTIME_URL` | *（空：关闭实时字幕）* | 实时字幕用的流式识别 WebSocket 地址，如 `ws://sensevoice:8040/v1/realtime?intent=transcription`（填 `http://sensevoice:8040/v1` 也会自动转换）。还需要配置 `ASR_BASE_URL`。见[实时字幕](#实时字幕流式识别)。 |
+| `ASR_REALTIME_TWO_PASS` | `true` | `true`：实时字幕只做预览，文字仍由 `ASR_MODEL` 逐段识别；`false`：实时识别的定稿直接作为文字。没有配置 `ASR_BASE_URL` / `ASR_MODEL` 时始终是单遍。 |
+| `ASR_REALTIME_API_KEY` | *（空）* | 实时识别服务需要鉴权时才填（sensevoice-server 不需要）。 |
+| `ASR_REALTIME_MAX_SECONDS` | `300` | 单次实时字幕会话最长时长；超过后录音继续，只用分段识别（关闭码 1009）。**必须 ≤ 实时识别服务的 `--max-audio-seconds`**（示例中为 300），否则上游会先以 1009 关闭会话，录音降级为分段识别。 |
+| `ASR_REALTIME_IDLE_SECONDS` | `30` | 这么久没有收到音频就关闭会话（1001）。 |
+| `ASR_REALTIME_MAX_SESSIONS` | `2` | 所有用户同时进行的实时字幕会话上限。不要超过实时识别服务的 `--max-connections`。 |
 | `APP_SECRET` | 自动生成 | 用来加密「设置」里保存的 API Key（AES-256-GCM，密钥用 HKDF 派生）。**建议设置。** 不填时会随机生成并保存到 `data/secret.key`，同时在日志里给出警告。 |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 空 | 首次启动时直接创建管理员，不用初始化页面，也不需要初始化码。已有用户后忽略。 |
 | `COOKIE_SECURE` | `auto` | 会话 Cookie 的 `Secure` 标记：`auto`（检测到 HTTPS 时开启）、`true`、`false`。 |
@@ -153,6 +159,23 @@ Markdown 是唯一的数据源。导图始终由 Markdown 生成，在导图上�
 
 限制：音频是在浏览器内存里解码的，特别长的文件（超过 1 小时左右）在内存小的设备上可能很慢或失败，建议先切开。能上传哪些格式取决于浏览器能解码哪些格式（主流浏览器都支持 mp3、m4a/AAC、wav、ogg/opus、webm、flac）。
 
+### 实时字幕（流式识别）
+
+可选。配置流式识别服务后，录音时**边说边出字**（开口后不到 1 秒出第一个字，约每 0.4 秒刷新），不用再等约 8 秒一段。不配置时，录音和以前完全一样。
+
+- **原理**：录音时，浏览器把麦克风音频转成 16 kHz PCM16（每帧 100 ms），通过 WebSocket 发到同源的 `/api/realtime`（用登录 cookie 鉴权）。后端再转发给流式识别服务，所以识别服务不需要暴露到公网；后端把它的事件转换成临时字幕（灰色斜体）和定稿字幕。
+- **两遍识别（默认，`ASR_REALTIME_TWO_PASS=true`）**：同一路音频照常每约 8 秒切一段，发到 `POST /api/transcribe`（你配置的 `ASR_MODEL`，如更准的 Qwen3-ASR-0.6B）。每段结果回来后替换对应那段音频的字幕：字幕和分段共用同一条音频时间轴（服务端给每条字幕标上它覆盖到的音频时间），音频已经进入正文的字幕会消失，跨过分段终点的字幕从该处截断（按时间比例定位，再用已提交文字的结尾做模糊匹配校正），实时字幕不会重复正文里已有的内容。点「停止」后，最后一段识别完终稿就好，实时连接立即关闭。
+- **单遍（`false`）**：实时识别的定稿直接作为文字，和分段结果一样追加进去；`/api/transcribe` 只在降级时使用。
+- **只配置了实时字幕、没有分段模型**：只设置 `ASR_REALTIME_URL`（没有 `ASR_BASE_URL` / `ASR_MODEL`）时，录音照常可用，自动走单遍，不报错；设置里的两遍识别开关置灰并附说明。上传音频文件仍需要分段模型。此时实时会话如果提前结束，没有可降级的识别，录音会停止（已识别的文字保留）并提示原因。
+- **降级**：实时会话连不上或中途断开时，录音继续，只用分段识别，并给一个轻提示说明原因：长时间无声（关闭码 **1001**）、连接数已满（**1008**）、超过时长上限（**1009**）、不可用（网络问题、**1006**、上游故障）。单遍模式下，最后一条字幕之后的音频会补发给 `/api/transcribe`，不会丢字（可能重复几个字）。
+- **资源**：会话无论怎么结束（停止、关闭标签页、断网、出错、空闲、超时），后端都会马上关闭到识别服务的连接，释放连接名额。每个用户同时只有 1 个会话（新会话替换旧会话），`ASR_REALTIME_MAX_SESSIONS` 限制所有会话总数；日志只记录时长和关闭码，不记录音频和文字。
+- **识别服务**：`sensevoice-server` 的 `/v1/realtime?intent=transcription`（OpenAI realtime transcription 协议）。保持服务端 VAD 开启（text2mindmap 不发送 `session.update`）。小 CPU 机器上请使用修复了积压和断线问题的版本（有 `--ws-idle-timeout-s`、断线立即释放名额、发送 1001 / 1008 / 1009 关闭帧）；未修复的版本字幕会落后几分钟，关掉的标签页也会一直占着名额。
+- **浏览器**：已在 Chrome 内核上端到端测试（headless Chrome）。Safari 尚未验证。
+- 在 **设置 → 语音识别 → 实时字幕** 里配置（地址、两遍识别开关、「测试连接」），或用 `ASR_REALTIME_URL`。**反向代理必须给 `/api/realtime` 转发 WebSocket 升级**，见[反向代理](#反向代理)。
+- **和 Qwen3-ASR 共用一台 CPU 机器**：两遍模式下录音时两个模型同时运行。6 核机器上 `llama-server` 用 **`-t 2`**（不要 6）：和 SenseVoice 一起跑时，6 线程的 RTF 升到 0.66–1.4，2 线程稳定在 0.36–0.40。这是部署参数，应用不会修改它，示例见 `docker-compose.asr.yml`。
+
+`docker-compose.asr.yml` 是一个覆盖文件示例，把两个识别容器加到同一网络（只在内网，不映射端口）：`docker compose -f docker-compose.yml -f docker-compose.asr.yml up -d`。
+
 ## 语音识别模型选择
 
 text2mindmap 只调用 OpenAI 兼容的 `POST {ASR_BASE_URL}/audio/transcriptions`：multipart 表单，字段 `file`、`model`、`response_format=json`，选了「说话语言」时再加 `language`；填了 Key 就带 `Authorization: Bearer <Key>`，返回 JSON 里要有 `text`。下面按部署条件分三类。
@@ -185,7 +208,7 @@ ASR_MODEL=qwen3-asr-0.6b
 - 「设置 → 语音识别」里对应填 Base URL、API Key、模型名，单段最长时长保持 28。`llama-server` 不看模型名，但 text2mindmap 要求必填，随便填一个即可。
 - Docker 镜像用固定标签 `ghcr.io/ggml-org/llama.cpp:server-b11749`，不要用 `latest`。要么设 `--api-key`，要么不映射端口、只放在内部网络。
 - **「说话语言」保持「自动识别语言」。** 传 `language=zh` 时，静音片段会把提示词原样返回（`Transcribe audio to text (language: zh).`）；不传时 0.6B 也不会把混说翻译成英文。text2mindmap 会去掉 `language Chinese<asr_text>` 前缀、提示词回显和只有「嗯」「um」这类语气词的片段。
-- **和 SenseVoice 实时识别放在同一台 6 核机器上时**，把 `-t` 降到 2–3，留出 CPU 给 SenseVoice。2 线程时 RTF 约 0.36–0.40。
+- **和 SenseVoice 实时字幕放在同一台 6 核机器上时**，用 **`-t 2`**，留出 CPU 给 SenseVoice（见[实时字幕](#实时字幕流式识别)）。2 线程时 RTF 约 0.36–0.40。
 
 **1.7B 用 vLLM / transformers 时要固定中文**：不指定语言时，它会把整段中英混说直接翻译成英文（测试里 CER 变成 49%）。text2mindmap 会把录音面板和上传入口旁的「说话语言」作为 `language` 字段转发，vLLM 的 Qwen3-ASR 会据此固定语言。这个选项保存在每个用户自己的浏览器里，默认是「自动识别语言」，服务端没法强制，所以要提醒用户选「中文」。用 `llama-server` 跑 1.7B 的测试里没出现翻译问题。
 
@@ -203,7 +226,7 @@ ASR_MODEL=Qwen/Qwen3-ASR-1.7B
 | 服务 | 能否直接接入 | Base URL / 模型名 | 说明 |
 |---|---|---|---|
 | **OpenAI** | ✅ | `https://api.openai.com/v1`，模型 `gpt-transcribe` | 单次 25MB。`whisper-1`、`gpt-4o-transcribe`、`gpt-4o-mini-transcribe` 已宣布弃用，2027-02-26 下线。 |
-| **Mistral Voxtral 3** | ⚠️ 格式一致，未实测 | `https://api.mistral.ai/v1`，模型 `voxtral-mini-transcribe-3`（带版本号的 ID 是 `voxtral-mini-transcribe-3-0`） | 文档里是 Bearer 鉴权、multipart 的 `file` / `model` / `language`，返回 `text`。`response_format` 不在它的文档字段里，是否被忽略要用「测试连接」确认。Voxtral 3 还是 Public Preview，权重没开源；实时版 Realtime 3 能不能识别中文没有确认，text2mindmap 也不使用实时接口。 |
+| **Mistral Voxtral 3** | ⚠️ 格式一致，未实测 | `https://api.mistral.ai/v1`，模型 `voxtral-mini-transcribe-3`（带版本号的 ID 是 `voxtral-mini-transcribe-3-0`） | 文档里是 Bearer 鉴权、multipart 的 `file` / `model` / `language`，返回 `text`。`response_format` 不在它的文档字段里，是否被忽略要用「测试连接」确认。Voxtral 3 还是 Public Preview，权重没开源；实时版 Realtime 3 能不能识别中文没有确认；text2mindmap 的实时字幕对接的是 sensevoice-server 的实时接口。 |
 | **阿里云百炼 Qwen3-ASR-Flash** | ❌ 暂不支持直接接入 | — | 它的 OpenAI 兼容模式只有 `/compatible-mode/v1/chat/completions`，音频要用 JSON 里的 `input_audio` 传（Base64 或公网 URL），没有 `/audio/transcriptions`。`qwen3-asr-flash-filetrans` 是异步任务，实时版走 WebSocket。需要自行加一层转换服务。 |
 | **蚂蚁百灵 Ant Ling**（Ming-3.0-asr-tiny） | ✅ | `https://api.ant-ling.com/v1`，模型 `Ming-3.0-asr-tiny` | 单次最多 30 秒、10MB，只接受 WAV 或 MP3。默认设置已经满足。 |
 | 其他服务 | 看文档 | — | 只要支持 OpenAI 兼容的 multipart `/v1/audio/transcriptions`、返回 JSON `text` 就能用。填好后点「测试连接」。 |
@@ -226,7 +249,7 @@ Ming-3.0-asr-tiny 自部署需要 1 张 GPU（SGLang-Omni），也属于部署�
 
 `TRUST_PROXY` 为 `false`（默认）时，所有 `X-Forwarded-*` 头都会被忽略。如果端口不经过代理也能直接访问，不要开启，否则客户端可以伪造这些头。有两层代理时（比如 Cloudflare → nginx → 应用）设为 `TRUST_PROXY=2`。
 
-生成过程用 Server-Sent Events 流式返回，代理要关闭响应缓冲，并允许较长的读取时间。
+生成过程用 Server-Sent Events 流式返回，代理要关闭响应缓冲，并允许较长的读取时间。实时字幕用的是 **`/api/realtime` 上的 WebSocket**：代理要在这个路径转发 `Upgrade` / `Connection` 头并保持长连接（服务端每 20 秒发一次 ping，读超时 600 秒足够；Cloudflare 约 100 秒的空闲断开也靠这个 ping 保活）。没有转发升级时，录音会退回分段识别，并提示「实时字幕不可用」。
 
 **Caddy**（自动申请 HTTPS 证书，默认就会设置 `X-Forwarded-*`）：
 
@@ -260,8 +283,25 @@ server {
         proxy_cache off;
         proxy_read_timeout 300s;
     }
+
+    # 实时字幕（WebSocket）
+    location /api/realtime {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_buffering off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
 }
 ```
+
+**1Panel / OpenResty**：在网站配置里加上同样的 `location /api/realtime { … }`（或在反向代理规则里开启 WebSocket 支持），SSE 路由继续保留 `proxy_buffering off;`。Caddy 不需要额外配置就能代理 WebSocket。
 
 ## 备份和恢复
 
@@ -303,7 +343,7 @@ npm run license-check   # 依赖里出现 GPL/AGPL/LGPL/SSPL/BUSL/CC-NC 许可�
 npm run notices         # 重新生成 THIRD_PARTY_NOTICES.md
 ```
 
-`npm run mock-llm` 会在 4010 端口启动一个模拟的 OpenAI 兼容服务（Key 是 `sk-test-secret`，模型是 `mock-model`），没有真实模型也能试用；`scripts/smoke.sh` 可以对运行中的实例做一遍端到端的接口检查。
+`npm run mock-llm` 会在 4010 端口启动一个模拟的 OpenAI 兼容服务（Key 是 `sk-test-secret`，模型是 `mock-model`），没有真实模型也能试用；`scripts/smoke.sh` 可以对运行中的实例做一遍端到端的接口检查。`node scripts/mock-realtime-asr.mjs 8041` 是一个模拟的流式识别服务（`ASR_REALTIME_URL=ws://127.0.0.1:8041/v1`），用来试实时字幕；`scripts/asr-bench/realtime-e2e.mjs` 通过运行中实例的 `/api/realtime` 把一段 WAV 推给真实的流式识别服务，报告延迟和 CER。
 
 ## 致谢和许可证
 

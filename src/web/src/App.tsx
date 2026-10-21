@@ -18,7 +18,7 @@ export function App() {
   const [doc, setDoc] = useState<Doc | null>(null)
   const [dialog, setDialog] = useState<null | 'settings' | 'about'>(null)
   const [settingsFocus, setSettingsFocus] = useState<'asr' | undefined>(undefined)
-  const [pub, setPub] = useState<{ chunkChars: number; maxInputChars: number; configured: boolean; asr?: { configured: boolean; segmentSeconds: number } }>({ chunkChars: 12000, maxInputChars: 200000, configured: true })
+  const [pub, setPub] = useState<{ chunkChars: number; maxInputChars: number; configured: boolean; asr?: { configured: boolean; segmentSeconds: number; realtime?: boolean; realtimeTwoPass?: boolean } }>({ chunkChars: 12000, maxInputChars: 200000, configured: true })
   const fileInput = useRef<HTMLInputElement>(null)
   const [navOpen, setNavOpen] = useState(false)
   const [mapStyle, setMapStyle] = useState<MapStyle>(DEFAULT_MAP_STYLE)

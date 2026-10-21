@@ -100,6 +100,12 @@ All settings are environment variables (put them in `.env`). LLM settings are de
 | `ASR_SEGMENT_SECONDS` | `28` | Longest audio segment per request (5–600). Keep ≤ 28 for providers with a 30 s limit. |
 | `ASR_TIMEOUT_MS` | `120000` | Timeout of one transcription request. |
 | `ASR_MAX_UPLOAD_MB` | `25` | Upload limit per `/api/transcribe` request. |
+| `ASR_REALTIME_URL` | *(empty: live captions off)* | Realtime (streaming) ASR WebSocket for live captions, e.g. `ws://sensevoice:8040/v1/realtime?intent=transcription` (`http://sensevoice:8040/v1` is accepted and converted). Needs `ASR_BASE_URL` too. See [Live captions](#live-captions-realtime). |
+| `ASR_REALTIME_TWO_PASS` | `true` | `true`: live captions are a preview and the text still comes from `ASR_MODEL` segment by segment. `false`: the realtime finals are the text. Without `ASR_BASE_URL` / `ASR_MODEL` it is always single-pass. |
+| `ASR_REALTIME_API_KEY` | *(empty)* | Bearer key for the realtime server, only if it needs one (sensevoice-server does not). |
+| `ASR_REALTIME_MAX_SECONDS` | `300` | Longest live-caption session; after that the recording continues with segments only (close code 1009). **Must be ≤ the realtime ASR server's `--max-audio-seconds`** (300 in the examples), otherwise the upstream closes the session with 1009 first and recording falls back to segments. |
+| `ASR_REALTIME_IDLE_SECONDS` | `30` | A session that sends no audio for this long is closed (1001). |
+| `ASR_REALTIME_MAX_SESSIONS` | `2` | Live-caption sessions at once, all users together. Keep it ≤ the realtime server's `--max-connections`. |
 | `APP_SECRET` | *(generated)* | Secret used to encrypt the API key saved in Settings (AES-256-GCM, key derived with HKDF). **Recommended.** If empty, a random one is generated into `data/secret.key` and a warning is logged. |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | *(empty)* | Create the admin on first start instead of using the setup page (no setup code needed). Ignored once a user exists. |
 | `COOKIE_SECURE` | `auto` | `Secure` flag of the session cookie: `auto` (when HTTPS is detected), `true`, `false`. |
@@ -153,6 +159,23 @@ If the ASR server runs on the Docker host, use `http://host.docker.internal:<por
 
 Limits: audio is decoded in the browser memory, so very long files (more than about an hour) may be slow or fail on low-memory devices. Split them first. The file formats you can upload are the ones your browser can decode (all common browsers handle mp3, m4a/AAC, wav, ogg/opus, webm, flac).
 
+### Live captions (realtime)
+
+Optional. With a streaming ASR server, text appears **while you speak** (first words after a fraction of a second, refreshed about every 0.4 s) instead of every ~8 s. Without one, recording works exactly as before.
+
+- **How it works**: while recording, the browser streams the microphone as 16 kHz PCM16 (100 ms frames) over a WebSocket to `/api/realtime` (same origin, session cookie). The server proxies it to the realtime ASR server, which never has to be reachable from the internet, and translates its events into partial (grey, italic) and final captions.
+- **Two-pass (default, `ASR_REALTIME_TWO_PASS=true`)**: the same audio is still cut into ~8 s segments and sent to `POST /api/transcribe` (your `ASR_MODEL`, e.g. Qwen3-ASR-0.6B, which is more accurate). Each segment's text replaces the captions for that stretch of audio: captions and segments share one audio timeline (the server stamps every caption with the audio time it covers), so a caption whose audio is already in the text disappears, and one that runs past a segment's end is cut at that point (by time, refined by matching the end of the committed text). The live caption never repeats text that is already in the document. After *Stop*, the final text is ready as soon as the last segment is done; the realtime session is closed right away.
+- **Single-pass (`false`)**: the realtime finals are the text, appended like segment results; `/api/transcribe` is only used as fallback.
+- **Live captions without a segment model**: if only `ASR_REALTIME_URL` is set (no `ASR_BASE_URL` / `ASR_MODEL`), recording still works and runs single-pass automatically, with no error; the two-pass switch in Settings is greyed out with a note. File upload needs the segment model. If the realtime session ends early there is nothing to fall back to, so recording stops (the text so far is kept) and a notice says why.
+- **Fallback**: when the realtime session cannot start or ends early, recording goes on with segments only and a short notice says why: idle timeout (close code **1001**), too many sessions (**1008**), session too long (**1009**), or unavailable (network, **1006**, upstream down). In single-pass mode the audio after the last caption is sent to `/api/transcribe`, so nothing is lost (a few words may repeat).
+- **Resources**: every way a session ends (Stop, closing the tab, network loss, errors, idle, too long) closes the upstream connection at once, so its connection slot is freed. Each user has one session at a time (a newer one replaces the older), and `ASR_REALTIME_MAX_SESSIONS` caps all of them; audio and text are never logged, only durations and close codes.
+- **Server**: `sensevoice-server`'s `/v1/realtime?intent=transcription` (the OpenAI realtime transcription dialect). Leave its server-side VAD on (text2mindmap sends no `session.update`). On small CPUs use a build with the realtime backlog / disconnect fix (`--ws-idle-timeout-s`, slots freed on disconnect, close frames 1001 / 1008 / 1009); without it the captions fall minutes behind and a closed tab keeps its slot.
+- **Browsers**: tested end-to-end in Chrome (headless). Safari is not verified yet.
+- Configure it in **Settings → Speech recognition → Live captions** (address, two-pass switch, *Test connection*), or with `ASR_REALTIME_URL`. **Your reverse proxy must pass WebSocket upgrades for `/api/realtime`**, see [Reverse proxy](#reverse-proxy).
+- **Sharing one CPU with Qwen3-ASR**: in two-pass mode both models run while you record. On a 6-core machine, start `llama-server` with **`-t 2`** (not 6): with 6 threads next to SenseVoice its RTF went up to 0.66–1.4, with 2 threads it stayed at 0.36–0.40. This is a deployment setting, the app does not change it. See `docker-compose.asr.yml`.
+
+`docker-compose.asr.yml` is an example override that adds both ASR containers on the same network (internal only, no published ports): `docker compose -f docker-compose.yml -f docker-compose.asr.yml up -d`.
+
 ## Choosing a speech recognition model
 
 text2mindmap only calls the OpenAI-compatible `POST {ASR_BASE_URL}/audio/transcriptions`: a multipart form with `file`, `model`, `response_format=json`, plus `language` when a *Spoken language* is picked. With a key it sends `Authorization: Bearer <key>`, and the JSON answer must contain `text`. Three kinds of setup:
@@ -185,7 +208,7 @@ ASR_MODEL=qwen3-asr-0.6b
 - In **Settings → Speech recognition**, fill in the same Base URL, API key and model, and keep max segment length at 28. `llama-server` ignores the model name, but text2mindmap requires one, so any name works.
 - Use a pinned Docker tag such as `ghcr.io/ggml-org/llama.cpp:server-b11749`, not `latest`. Either set `--api-key` or don't publish the port and keep it on an internal network.
 - **Leave *Spoken language* on *Auto language*.** With `language=zh`, silent segments come back as the echoed prompt (`Transcribe audio to text (language: zh).`); without it, 0.6B does not translate mixed speech into English. text2mindmap strips the `language Chinese<asr_text>` prefix, prompt echoes and segments that are only a filler such as 嗯 or "um".
-- **On the same 6-core machine as SenseVoice live captions**, lower `-t` to 2–3 to leave CPU for SenseVoice. At 2 threads RTF is about 0.36–0.40.
+- **On the same 6-core machine as SenseVoice live captions**, use **`-t 2`** to leave CPU for SenseVoice (see [Live captions](#live-captions-realtime)). At 2 threads RTF is about 0.36–0.40.
 
 **1.7B under vLLM / transformers needs Chinese forced**: without a language it translates mixed Chinese–English speech into English (CER rose to 49% in our test). text2mindmap forwards the *Spoken language* selector next to Record / Upload as the `language` field, and vLLM's Qwen3-ASR then fixes the language. The selector is saved per browser and defaults to *Auto language*; the server cannot force it, so tell users to pick 中文. The `llama-server` runs of 1.7B did not show the translation problem.
 
@@ -203,7 +226,7 @@ ASR_MODEL=Qwen/Qwen3-ASR-1.7B
 | Service | Works directly? | Base URL / model | Notes |
 |---|---|---|---|
 | **OpenAI** | ✅ | `https://api.openai.com/v1`, model `gpt-transcribe` | 25 MB per request. `whisper-1`, `gpt-4o-transcribe` and `gpt-4o-mini-transcribe` are deprecated and will be removed on 2027-02-26. |
-| **Mistral Voxtral 3** | ⚠️ Same format, untested | `https://api.mistral.ai/v1`, model `voxtral-mini-transcribe-3` (versioned ID `voxtral-mini-transcribe-3-0`) | Docs show Bearer auth and multipart `file` / `model` / `language`, answer with `text`. `response_format` is not among its documented fields; use *Test connection* to check it is ignored. Voxtral 3 is a Public Preview with closed weights; whether Realtime 3 handles Chinese is unconfirmed, and text2mindmap does not use realtime anyway. |
+| **Mistral Voxtral 3** | ⚠️ Same format, untested | `https://api.mistral.ai/v1`, model `voxtral-mini-transcribe-3` (versioned ID `voxtral-mini-transcribe-3-0`) | Docs show Bearer auth and multipart `file` / `model` / `language`, answer with `text`. `response_format` is not among its documented fields; use *Test connection* to check it is ignored. Voxtral 3 is a Public Preview with closed weights; whether Realtime 3 handles Chinese is unconfirmed; text2mindmap's live captions target sensevoice-server's realtime API. |
 | **Alibaba Cloud Model Studio (Bailian) Qwen3-ASR-Flash** | ❌ Not directly | — | Its OpenAI-compatible mode is only `/compatible-mode/v1/chat/completions` with the audio as `input_audio` in JSON (Base64 or a public URL); there is no `/audio/transcriptions`. `qwen3-asr-flash-filetrans` is an async job API and the realtime model uses WebSocket. You'd need your own translation layer. |
 | **Ant Ling** (Ming-3.0-asr-tiny) | ✅ | `https://api.ant-ling.com/v1`, model `Ming-3.0-asr-tiny` | At most 30 s and 10 MB per request, WAV or MP3 only. The defaults already fit. |
 | Others | Check the docs | — | Anything with an OpenAI-compatible multipart `/v1/audio/transcriptions` that answers JSON `text` works. Press *Test connection* after filling it in. |
@@ -226,7 +249,7 @@ Behind a reverse proxy, **`TRUST_PROXY=true` is required**. What it changes:
 
 When `TRUST_PROXY` is `false` (default), all `X-Forwarded-*` headers are ignored. Do not enable it when the port is reachable without the proxy, because then clients could forge those headers. Use `TRUST_PROXY=2` if there are two proxies (e.g. Cloudflare → nginx → app).
 
-Generation streams over Server-Sent Events, so turn off response buffering and allow long reads.
+Generation streams over Server-Sent Events, so turn off response buffering and allow long reads. Live captions use a **WebSocket at `/api/realtime`**: the proxy must forward the `Upgrade` / `Connection` headers there and keep the connection open (the server pings every 20 s, so a 600 s read timeout is plenty; Cloudflare's ~100 s idle limit is covered by the pings). If the upgrade is not passed, recording falls back to segments and shows "Live captions are unavailable".
 
 **Caddy** (gets HTTPS certificates automatically; sets `X-Forwarded-*` and streams by default):
 
@@ -260,8 +283,25 @@ server {
         proxy_cache off;
         proxy_read_timeout 300s;
     }
+
+    # Live captions (WebSocket)
+    location /api/realtime {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_buffering off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
 }
 ```
+
+**1Panel / OpenResty**: add the same `location /api/realtime { … }` block to the site's configuration (or enable WebSocket support for the reverse-proxy rule), and keep `proxy_buffering off;` for the SSE routes. Caddy proxies WebSockets without extra configuration.
 
 ## Backup and restore
 
@@ -303,13 +343,13 @@ npm run license-check   # fails on GPL/AGPL/LGPL/SSPL/BUSL/CC-NC dependencies
 npm run notices         # regenerates THIRD_PARTY_NOTICES.md
 ```
 
-`npm run mock-llm` starts a fake OpenAI-compatible server on `:4010` (key `sk-test-secret`, model `mock-model`) for trying the app without a real model; `scripts/smoke.sh` runs an end-to-end API check against a running instance.
+`npm run mock-llm` starts a fake OpenAI-compatible server on `:4010` (key `sk-test-secret`, model `mock-model`) for trying the app without a real model; `scripts/smoke.sh` runs an end-to-end API check against a running instance. `node scripts/mock-realtime-asr.mjs 8041` is a fake realtime ASR server (`ASR_REALTIME_URL=ws://127.0.0.1:8041/v1`) for trying live captions; `scripts/asr-bench/realtime-e2e.mjs` streams a WAV through a running instance's `/api/realtime` into a real one and reports latency and CER.
 
 Project layout:
 
 ```
 src/shared/      Markdown <-> outline tree, tree <-> map data (used by server and browser)
-src/server/      Hono API: auth, documents, settings, LLM proxy (SSE), chunking, prompts
+src/server/      Hono API: auth, documents, settings, LLM proxy (SSE), chunking, prompts, realtime ASR WebSocket proxy
 src/web/         React app: editor, map adapter, dialogs, i18n
 tests/           Vitest tests
 scripts/         build, mock LLM, smoke test, license check

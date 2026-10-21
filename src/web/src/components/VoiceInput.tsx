@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useI18n } from '../i18n'
-import { ASR_LANGS, fmtClock, useTranscriber, type AsrPublic } from '../audio/useTranscriber'
+import { ASR_LANGS, canRecord, fmtClock, useTranscriber, type AsrPublic } from '../audio/useTranscriber'
 
 export type { AsrPublic } from '../audio/useTranscriber'
 
@@ -16,6 +16,26 @@ export function AsrOffHint({ isAdmin, onOpenSettings }: { isAdmin?: boolean; onO
         : t('asrOffUser')}
     </span>
   )
+}
+
+/** Live captions while recording: finals not yet replaced by the segmented text (grey) + the current partial. */
+export function LiveCaptionsView({ captions, live }: { captions: { done: string; partial: string }; live: boolean }) {
+  const { t } = useI18n()
+  if (!live && !captions.done && !captions.partial) return null
+  return (
+    <div className="live-captions" data-testid="live-captions" aria-live="polite" title={t('rtCaptionsHint')}>
+      <span className="live-badge">{t('rtLive')}</span>
+      {captions.done && <span className="cap-done">{captions.done}</span>}
+      {captions.partial && <span className="cap-partial">{captions.partial}</span>}
+      {!captions.done && !captions.partial && <span className="muted">{t('rtWaiting')}</span>}
+    </div>
+  )
+}
+
+/** Light, non-blocking notice (e.g. live captions fell back to segmented recognition). */
+export function VoiceNotice({ text, onDismiss }: { text: string; onDismiss: () => void }) {
+  if (!text) return null
+  return <div className="toast voice-toast" role="status" data-testid="rt-notice" onClick={onDismiss}>{text}</div>
 }
 
 export function LangSelect({ value, onChange, disabled }: { value: string; onChange: (v: string) => void; disabled?: boolean }) {
@@ -47,7 +67,9 @@ export function VoiceInput({ asr, onAppend, onBusy, isAdmin = false, onOpenSetti
   const fileRef = useRef<HTMLInputElement>(null)
   useEffect(() => { onBusy?.(v.busy) }, [v.busy, onBusy])
 
-  const off = !asr.configured
+  // Recording also works with live captions alone; uploading needs the segment model.
+  const off = !canRecord(asr)
+  const noUpload = !asr.configured
   const recTitle = off ? t('asrConfigureFirst') : mic === 'insecure' ? t('asrNeedHttps') : mic === 'unsupported' ? t('asrNoMicApi') : t('asrRecordHint')
 
   return (
@@ -60,6 +82,7 @@ export function VoiceInput({ asr, onAppend, onBusy, isAdmin = false, onOpenSetti
             <span className="rec-time">{fmtClock((v.now - state.since) / 1000)}</span>
             <span className="level"><span style={{ width: `${Math.round(v.level * 100)}%` }} /></span>
             <span className="muted small">{state.pending ? t('asrPending', { n: state.pending }) : t('asrListening')}</span>
+            {v.live && <span className="live-badge" data-testid="rt-live">{t('rtLive')}</span>}
           </>
         ) : state.kind === 'finishing' ? (
           <><span className="spinner sm" /><span className="muted small">{t('asrFinishing', { n: state.pending })}</span></>
@@ -78,8 +101,8 @@ export function VoiceInput({ asr, onAppend, onBusy, isAdmin = false, onOpenSetti
             <span className="tip-wrap" title={recTitle}>
               <button className="btn" data-testid="rec-start" disabled={off || mic !== 'ok'} title={recTitle} aria-label={`${t('asrRecord')}: ${recTitle}`} onClick={v.startRec}>🎙 {t('asrRecord')}</button>
             </span>
-            <span className="tip-wrap" title={off ? t('asrConfigureFirst') : t('asrUploadHint')}>
-              <button className="btn" data-testid="audio-upload" disabled={off} title={off ? t('asrConfigureFirst') : t('asrUploadHint')} onClick={() => fileRef.current?.click()}>⇪ {t('asrUpload')}</button>
+            <span className="tip-wrap" title={noUpload ? t('asrConfigureFirst') : t('asrUploadHint')}>
+              <button className="btn" data-testid="audio-upload" disabled={noUpload} title={noUpload ? t('asrConfigureFirst') : t('asrUploadHint')} onClick={() => fileRef.current?.click()}>⇪ {t('asrUpload')}</button>
             </span>
             <LangSelect value={v.lang} onChange={v.setLang} disabled={off} />
             {off
@@ -89,8 +112,10 @@ export function VoiceInput({ asr, onAppend, onBusy, isAdmin = false, onOpenSetti
         )}
         <input ref={fileRef} type="file" hidden accept={AUDIO_ACCEPT} onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void v.transcribeFile(f) }} />
       </div>
+      {(state.kind === 'recording' || state.kind === 'finishing') && <LiveCaptionsView captions={v.captions} live={v.live} />}
       {v.error && <div className="error small" data-testid="asr-error">{v.error}</div>}
       {!v.error && v.info && <div className="hint">{v.info}</div>}
+      <VoiceNotice text={v.notice} onDismiss={v.dismissNotice} />
     </div>
   )
 }

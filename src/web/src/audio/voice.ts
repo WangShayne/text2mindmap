@@ -1,4 +1,4 @@
-import { ASR_SAMPLE_RATE, downmix, encodeWav, quietestPoint, resample } from '../../../shared/wav'
+import { ASR_SAMPLE_RATE, StreamResampler, downmix, encodeWav, quietestPoint, resample } from '../../../shared/wav'
 
 export const MAX_AUDIO_FILE_BYTES = 300 * 1024 * 1024
 
@@ -61,7 +61,20 @@ export class MicRecorder {
   private rate = 48000
   private stopped = false
 
-  constructor(private segmentSeconds: number, private onSegment: (samples16k: Float32Array) => void, private onLevel?: (rms: number) => void) {}
+  private live?: StreamResampler
+
+  /**
+   * @param onLive receives the same audio as a continuous 16 kHz stream (for live captions), in
+   * chunks as they arrive from the microphone.
+   */
+  /** Input samples already handed out as segments (for the segment time ranges). */
+  private consumed = 0
+
+  /**
+   * @param onSegment gets each segment and its time range (seconds since recording started). A silent
+   * stretch is reported with empty samples, so the ranges stay contiguous.
+   */
+  constructor(private segmentSeconds: number, private onSegment: (samples16k: Float32Array, range: { start: number; end: number }) => void, private onLevel?: (rms: number) => void, private onLive?: (samples16k: Float32Array) => void) {}
 
   async start() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
@@ -71,12 +84,14 @@ export class MicRecorder {
     this.ctx = new AudioContext()
     void this.ctx.resume().catch(() => {})
     this.rate = this.ctx.sampleRate
+    if (this.onLive) this.live = new StreamResampler(this.rate, ASR_SAMPLE_RATE)
     const src = this.ctx.createMediaStreamSource(this.stream)
     // ScriptProcessorNode is deprecated but works everywhere without a separate worklet file.
     this.node = this.ctx.createScriptProcessor(4096, 1, 1)
     this.node.onaudioprocess = (e) => {
       const d = new Float32Array(e.inputBuffer.getChannelData(0))
       this.chunks.push(d); this.length += d.length
+      if (this.live && this.onLive) { const x = this.live.push(d); if (x.length) this.onLive(x) }
       if (this.onLevel) { let s = 0; for (let i = 0; i < d.length; i += 4) s += d[i] * d[i]; this.onLevel(Math.sqrt(s / (d.length / 4))) }
       if (this.length >= this.segmentSeconds * this.rate) this.cut(false)
     }
@@ -94,10 +109,13 @@ export class MicRecorder {
     this.chunks = rest.length ? [rest.slice()] : []
     this.length = rest.length
     const seg = all.subarray(0, end)
+    const range = { start: this.consumed / this.rate, end: (this.consumed + end) / this.rate }
+    this.consumed += end
     // Skip segments that are (almost) silent: nothing to transcribe.
     let peak = 0
     for (let i = 0; i < seg.length; i += 8) peak = Math.max(peak, Math.abs(seg[i]))
-    if (seg.length > this.rate * 0.3 && peak > 0.01) this.onSegment(resample(seg, this.rate, ASR_SAMPLE_RATE))
+    if (seg.length > this.rate * 0.3 && peak > 0.01) this.onSegment(resample(seg, this.rate, ASR_SAMPLE_RATE), range)
+    else this.onSegment(new Float32Array(0), range)
   }
 
   async stop() {

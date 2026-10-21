@@ -45,6 +45,18 @@ export interface AppConfig {
   asrTimeoutMs: number
   /** Per-request upload limit for /api/transcribe, in bytes. */
   asrMaxBytes: number
+  /** Realtime (streaming) ASR WebSocket, e.g. ws://sensevoice:8040/v1/realtime?intent=transcription. Empty = live captions off. */
+  asrRealtimeUrl: string
+  /** Bearer key for the realtime upstream (only when it needs one). */
+  asrRealtimeApiKey: string
+  /** true: live captions only, the text still comes from the segmented ASR model (two-pass). false: realtime finals are the text. */
+  asrRealtimeTwoPass: boolean
+  /** Longest realtime session (seconds of audio). */
+  asrRealtimeMaxSeconds: number
+  /** A realtime session with no audio from the browser for this long is closed (1001). */
+  asrRealtimeIdleSeconds: number
+  /** Realtime sessions open at once across all users (keep <= the upstream's --max-connections). */
+  asrRealtimeMaxSessions: number
   adminUsername?: string
   adminPassword?: string
   staticDir?: string
@@ -74,8 +86,34 @@ export function loadConfig(env = process.env): AppConfig {
     asrSegmentSeconds: clampSegmentSeconds(int('ASR_SEGMENT_SECONDS', 28)),
     asrTimeoutMs: int('ASR_TIMEOUT_MS', 120_000),
     asrMaxBytes: int('ASR_MAX_UPLOAD_MB', 25) * 1024 * 1024,
+    asrRealtimeUrl: normalizeRealtimeUrl(env.ASR_REALTIME_URL || '') ?? '',
+    asrRealtimeApiKey: env.ASR_REALTIME_API_KEY || '',
+    asrRealtimeTwoPass: !/^(false|0|no|off)$/i.test((env.ASR_REALTIME_TWO_PASS ?? '').trim()),
+    asrRealtimeMaxSeconds: int('ASR_REALTIME_MAX_SECONDS', 300), // sensevoice-server --max-audio-seconds 300
+    asrRealtimeIdleSeconds: int('ASR_REALTIME_IDLE_SECONDS', 30),
+    asrRealtimeMaxSessions: int('ASR_REALTIME_MAX_SESSIONS', 2),
     adminUsername: env.ADMIN_USERNAME || undefined,
     adminPassword: env.ADMIN_PASSWORD || undefined,
     staticDir: env.STATIC_DIR || undefined,
   }
+}
+
+/**
+ * Normalizes a realtime ASR address. Accepts ws:// / wss:// (or http:// / https://, mapped to ws / wss).
+ * A base such as ws://sensevoice:8040/v1 gets /realtime appended (a bare host gets /v1/realtime), and intent=transcription is
+ * added when missing. Returns '' for empty input and undefined when the value is not a usable URL.
+ */
+export function normalizeRealtimeUrl(v: string): string | undefined {
+  const s = v.trim()
+  if (!s) return ''
+  let u: URL
+  try { u = new URL(s) } catch { return undefined }
+  const proto = ({ 'ws:': 'ws:', 'wss:': 'wss:', 'http:': 'ws:', 'https:': 'wss:' } as Record<string, string>)[u.protocol]
+  if (!proto || !u.hostname || u.username || u.password) return undefined
+  u.protocol = proto
+  const p = u.pathname.replace(/\/+$/, '')
+  if (!/\/realtime$/.test(p)) u.pathname = p ? `${p}/realtime` : '/v1/realtime'
+  if (!u.searchParams.has('intent')) u.searchParams.set('intent', 'transcription')
+  u.hash = ''
+  return u.toString()
 }
