@@ -13,6 +13,7 @@
 - **重新生成**：可以替换整个文档（会先确认，避免覆盖手动修改），也可以**扩展选中的节点**，为它生成子节点。
 - **双向编辑**：左边是 Markdown 编辑器（CodeMirror 6），右边是思维导图（[simple-mind-map](https://github.com/wanglin2/mind-map)）。导图上 Tab 添加子节点、Enter 添加同级节点、F2 编辑、Del 删除、拖动节点可换父节点、Ctrl+Z / Ctrl+Y 撤销重做、`/` 展开收起。
 - **停止**：生成过程中可以随时停止，会同时取消对模型的请求。模型如果返回的是段落文字而不是大纲，会自动重试一次，仍不行就给出明确的错误提示。
+- **语音输入**：可以录音或上传音频文件，用任意 OpenAI 兼容的语音识别接口转成文字（自托管的 SenseVoice / Qwen3-ASR / Ming-3.0-asr-tiny，或云服务），文字会放进输入框。见[自托管语音识别](#自托管语音识别)。
 - **文档**：新建、重命名、删除、导入 `.md`、自动保存、一键复制 Markdown。
 - **导出**：Markdown、PNG、SVG、PDF、XMind（浏览器端）；OPML、JSON（服务端）。
 - **管理员设置**：Base URL、模型名、API Key（加密存储，永远不会发给浏览器）、可编辑的系统提示词（可恢复默认）、「测试连接」按钮，能区分 Key 错误（401）、地址错误或网络不通、模型不存在（404）；「获取模型列表」按钮会调用服务商的 `/models` 接口，把模型列表放进可搜索的下拉框（也可以直接手动输入模型名）。
@@ -65,7 +66,13 @@ LLM_BASE_URL=http://host.docker.internal:3001/v1    # 3001 端口上的 New API 
 | `LLM_TEMPERATURE` | 不发送 | 可选的采样温度。 |
 | `LLM_TIMEOUT_MS` | `180000` | 单次模型请求的超时时间。 |
 | `LLM_CHUNK_CHARS` | `12000` | 超过这个字数的文本会分段整理再合并。 |
-| `MAX_INPUT_CHARS` | `200000` | 单次最多接受的输入字数。 |
+| `MAX_INPUT_CHARS` | `200000` | 最多接受的输入字数。 |
+| `ASR_BASE_URL` | 空（不开启语音输入） | OpenAI 兼容的语音识别接口地址，包含 `/v1`，程序会拼上 `/audio/transcriptions`。见[自托管语音识别](#自托管语音识别)。 |
+| `ASR_API_KEY` | 空 | 语音识别服务的 Key，本地服务可以不填。 |
+| `ASR_MODEL` | 空 | 语音识别模型名，比如 `SenseVoiceSmall`、`Ming-3.0-asr-tiny`、`gpt-transcribe`。 |
+| `ASR_SEGMENT_SECONDS` | `28` | 每次请求的最长音频时长（5–600 秒）。服务商限制 30 秒时保持 28 以内。 |
+| `ASR_TIMEOUT_MS` | `120000` | 单次识别请求的超时时间。 |
+| `ASR_MAX_UPLOAD_MB` | `25` | `/api/transcribe` 单次上传上限。 |
 | `APP_SECRET` | 自动生成 | 用来加密「设置」里保存的 API Key（AES-256-GCM，密钥用 HKDF 派生）。**建议设置。** 不填时会随机生成并保存到 `data/secret.key`，同时在日志里给出警告。 |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 空 | 首次启动时直接创建管理员，不用初始化页面，也不需要初始化码。已有用户后忽略。 |
 | `COOKIE_SECURE` | `auto` | 会话 Cookie 的 `Secure` 标记：`auto`（检测到 HTTPS 时开启）、`true`、`false`。 |
@@ -95,6 +102,37 @@ Markdown 是唯一的数据源。导图始终由 Markdown 生成，在导图上�
 3. 用两种方式避免循环触发：由导图写入编辑器的修改带有标记，不会再去重绘导图；程序记住导图当前显示内容对应的 Markdown，收到相同内容的变更事件（也就是自己渲染引起的回声）直接忽略。
 
 导图渲染器被封装在一个小接口后面（`src/web/src/mindmap/adapter.ts`），Markdown 和树的互相转换在 `src/shared/` 里。以后想把 simple-mind-map 换成 mind-elixir 等其他库，只要再写一个适配器。
+
+## 自托管语音识别
+
+「生成」对话框可以先把语音转成文字，再生成导图：**录音**（每隔约 8 秒出一段文字），或者**上传音频文件**（mp3、m4a、wav、webm、ogg、flac 等）。识别结果会放进输入框，点「开始」之前可以先修改。
+
+工作方式：浏览器用 Web Audio API 解码音频，统一转成 **16kHz 单声道 16 位 WAV**，再按「单段最长时长」切段（默认 **28 秒**，在说话停顿处切，不会把一个词切成两半）。各段依次发给 `POST /api/transcribe`，由服务端以流的方式转发到 `{ASR Base URL}/audio/transcriptions`（OpenAI 兼容的 multipart 格式，`response_format=json`，返回 `text` 或 `verbose_json` 也能识别）。服务端不做转码，所以 Docker 镜像里不需要 ffmpeg。ASR 的 Key 和 LLM 的 Key 一样加密保存，不会发给浏览器。
+
+在 **设置 → 语音识别** 里配置（Base URL、模型名、API Key、单段最长时长、「测试连接」、「获取模型列表」），也可以用下面的 `ASR_*` 环境变量。只要提供 OpenAI 兼容的 `/v1/audio/transcriptions` 接口的服务都可以用：
+
+| 方案 | Base URL / 模型名 | 说明 |
+|---|---|---|
+| **只有 CPU：SenseVoice-Small**，用 FunASR 的 [`sensevoice-server`](https://www.funasr.com/en/deploy/sensevoice-native-server.html) | `http://<主机>:8040/v1`，模型名 `SenseVoiceSmall`（以 `/v1/models` 返回的为准） | 小服务器首选。单个 C++ 程序，不需要 Python，GGUF 模型，自带 VAD。支持中文、粤语、英语、日语、韩语。作为独立的服务或容器跟 text2mindmap 一起跑。它本身没有鉴权，只监听 `127.0.0.1` 或内部 Docker 网络。 |
+| **有 GPU：Qwen3-ASR** + vLLM | 例如 `vllm serve Qwen/Qwen3-ASR-1.7B` → `http://<主机>:8000/v1`，模型名 `Qwen/Qwen3-ASR-1.7B` | 准确率更高，支持多种语言，Apache-2.0。vLLM 版本和参数见模型卡片。 |
+| **有 GPU：[Ming-3.0-asr-tiny](https://huggingface.co/inclusionAI/Ming-3.0-asr-tiny)**（inclusionAI，9B，MIT） | 你的服务地址 `/v1`，模型名 `Ming-3.0-asr-tiny` | 单卡可跑。需要用提供 OpenAI 兼容 `/v1/audio/transcriptions` 接口的服务来部署。 |
+| **云服务：蚂蚁百灵 Ant Ling**（Ming-3.0-asr-tiny） | `https://api.ant-ling.com/v1`，模型名 `Ming-3.0-asr-tiny` | 单次请求最多 **30 秒、10MB**，只接受 WAV 或 MP3，只返回 JSON。默认设置（16kHz WAV、28 秒一段、`response_format=json`）已经满足。 |
+| **云服务：OpenAI** | `https://api.openai.com/v1`，模型名 `gpt-transcribe` | 单次 25MB。OpenAI 已把 `whisper-1`、`gpt-4o-transcribe`、`gpt-4o-mini-transcribe` 标为弃用，新配置请用 `gpt-transcribe`。 |
+
+没有 30 秒限制的服务可以把「单段最长时长」调大，比如 120 秒（每段约 3.8MB）。段越长，模型能参考的上下文越多，但文字出来得越慢。
+
+**示例：SenseVoice 作为独立容器，和 text2mindmap 在同一个 Docker 网络里**（我们自己的演示环境就是这样部署的）：
+
+- 按 [FunASR 的文档](https://www.funasr.com/en/deploy/sensevoice-native-server.html) 编译 `sensevoice-server`，打包成镜像（官方没有提供现成的镜像），容器名或服务名叫 `sensevoice`，监听容器内 `0.0.0.0:8040`，**不映射到宿主机端口**，只加入 text2mindmap 所在的网络。启动参数示例：`sensevoice-server -m model/sensevoice-small-q8.gguf -vad model/fsmn-vad.gguf --threads 8 --max-connections 2 --max-audio-seconds 300 0.0.0.0 8040`。
+- 在 text2mindmap 的「设置 → 语音识别」里填：Base URL `http://sensevoice:8040/v1`，模型名 `sensevoice-small`（以 `/v1/models` 返回为准），**API Key 留空**（这个服务没有鉴权，留空时不会发送 `Authorization` 头），单段最长时长保持 28。
+- 或者写进 `.env`：`ASR_BASE_URL=http://sensevoice:8040/v1`、`ASR_MODEL=sensevoice-small`。
+- `--max-connections 2` 表示同时最多处理 2 个请求。text2mindmap 每个浏览器是一段一段依次发送的，人少的时候够用。
+
+如果 ASR 服务跑在 Docker 宿主机上，Base URL 用 `http://host.docker.internal:<端口>/v1`，并且让它监听容器能访问到的地址（Docker 网桥，比如 `172.17.0.1`，不要只监听 `127.0.0.1`）。更省事的做法是把它作为同一个 `docker-compose.yml` 里的另一个服务，用 `http://<服务名>:<端口>/v1` 访问。
+
+**录音必须用 HTTPS 访问**（浏览器只允许 `https://` 页面和 `http://localhost` 使用麦克风），上传音频文件不受影响。用 nginx / 1Panel 反代时，`client_max_body_size` 要大于一段音频的大小（nginx 默认 1MB，刚好够 28 秒一段；如果调大了单段时长，建议设成 `30m`）。
+
+限制：音频是在浏览器内存里解码的，特别长的文件（超过 1 小时左右）在内存小的设备上可能很慢或失败，建议先切开。能上传哪些格式取决于浏览器能解码哪些格式（主流浏览器都支持 mp3、m4a/AAC、wav、ogg/opus、webm、flac）。
 
 ## 反向代理
 
@@ -126,7 +164,7 @@ server {
     server_name mindmap.example.com;
     # ssl_certificate / ssl_certificate_key ...
 
-    client_max_body_size 5m;
+    client_max_body_size 30m;   # 语音识别的音频分段
 
     location / {
         proxy_pass http://127.0.0.1:3000;
@@ -165,7 +203,8 @@ docker compose start
 - 密码用 scrypt 哈希。会话是随机令牌（数据库里只存哈希），放在 `HttpOnly`、`SameSite=Lax` 的 Cookie 里。登录失败有频率限制（每个 IP 15 分钟内最多 10 次）。
 - 修改数据的请求必须是 JSON 且同源（防 CSRF）。
 - 对公网开放时请使用 HTTPS；放在反向代理后面时设置 `TRUST_PROXY=true`（见[反向代理](#反向代理)）。
-- 你粘贴的文本会发给模型服务商，请选择你信得过的服务。
+- 你粘贴的文本会发给模型服务商，音频会发给语音识别服务，请选择你信得过的服务。
+- 语音识别的 Key 和 LLM 的 Key 规则一样：加密保存，任何接口都不返回。上传音频（`/api/transcribe`）需要登录，只接受 `audio/*` 类型（不是 CORS 简单请求类型，其他网站无法跨站提交），单次大小有上限，音频不会保存。
 
 ## 开发
 
@@ -188,6 +227,8 @@ npm run notices         # 重新生成 THIRD_PARTY_NOTICES.md
 
 本产品思维导图基于SimpleMindMap项目开发，版权归源项目所有（<https://github.com/wanglin2/mind-map>）。
 The mind map in this product is built on the [SimpleMindMap](https://github.com/wanglin2/mind-map) project (MIT).
+
+语音识别推荐自托管的 [SenseVoice](https://github.com/QwenAudio/SenseVoice) 模型（SenseVoice-Small，代码为 MIT 许可证，模型许可见其仓库），由 FunASR 的 `sensevoice-server` 提供服务。text2mindmap 不附带任何模型，语音识别服务需要自行部署。
 
 只使用了 `simple-mind-map` npm 包自带的免费插件。所有打包进来的第三方依赖及其许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 

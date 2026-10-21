@@ -31,7 +31,7 @@ const isDefaultTitle = (s: string) => !s || s === 'Untitled' || s === '未命名
 export function Workspace({ doc, onMetaChange, settings, onImport, onAbout, onToggleNav }: {
   doc: Doc
   onMetaChange: (d: Partial<Doc> & { id: string }) => void
-  settings: { chunkChars: number; maxInputChars: number; configured: boolean }
+  settings: { chunkChars: number; maxInputChars: number; configured: boolean; asr?: { configured: boolean; segmentSeconds: number } }
   onImport: () => void
   onAbout: () => void
   onToggleNav: () => void
@@ -252,7 +252,7 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onAbout, onTo
           <div className="shortcuts">{t('shortcuts')}</div>
         </section>
       </div>
-      {genOpen && <GenerateDialog initialMode={genOpen} selection={selection} chunkChars={settings.chunkChars} maxChars={settings.maxInputChars} onStart={startFromDialog} onClose={() => setGenOpen(null)} />}
+      {genOpen && <GenerateDialog initialMode={genOpen} selection={selection} chunkChars={settings.chunkChars} maxChars={settings.maxInputChars} asr={settings.asr ?? { configured: false, segmentSeconds: 28 }} onStart={startFromDialog} onClose={() => setGenOpen(null)} />}
       {toast && <div className="toast">{toast}</div>}
     </div>
   )

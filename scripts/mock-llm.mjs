@@ -20,6 +20,34 @@ function outlineFor(text) {
   return md
 }
 
+const ASR_LINES = [
+  '今天我们讨论一下新产品的发布计划。',
+  '第一部分是目标用户，主要是欧洲的中小企业。',
+  '第二部分是渠道，包括线上广告和合作伙伴。',
+  '第三部分是风险，预算和人手都比较紧张。',
+  '最后确认一下时间表，下个月完成第一版。',
+]
+
+/** Mock /audio/transcriptions: like strict providers, rejects audio longer than 30 s or non-WAV. */
+async function mockTranscription(req, res, calls) {
+  const chunks = []
+  for await (const c of req) chunks.push(c)
+  const body = Buffer.concat(chunks)
+  const text = body.toString('latin1')
+  const field = (name) => new RegExp(`name="${name}"\\r\\n\\r\\n([^\\r]*)\\r\\n`).exec(text)?.[1]
+  const riff = body.indexOf('RIFF')
+  const json = (st, b) => { res.writeHead(st, { 'content-type': 'application/json' }); res.end(JSON.stringify(b)) }
+  if (riff < 0) return json(400, { error: { message: 'only wav is supported' } })
+  const rate = body.readUInt32LE(riff + 24)
+  const seconds = body.readUInt32LE(riff + 40) / 2 / rate
+  calls.push({ asr: true, model: field('model'), language: field('language'), format: field('response_format'), rate, seconds })
+  if (process.env.MOCK_LOG) console.log(`[asr] ${seconds.toFixed(2)}s @${rate}Hz model=${field('model')} lang=${field('language') ?? '-'}`)
+  if (seconds > 30) return json(400, { error: { message: 'audio duration exceeds 30 seconds' } })
+  await new Promise((r) => setTimeout(r, Number(process.env.MOCK_ASR_DELAY ?? 300)))
+  const n = calls.filter((c) => c.asr).length
+  json(200, { text: seconds < 1.2 ? '' : ASR_LINES[(n - 1) % ASR_LINES.length] })
+}
+
 export function startMockLlm(port = 0) {
   const calls = []
   const counters = new Map()
@@ -33,6 +61,7 @@ export function startMockLlm(port = 0) {
       res.writeHead(200, { 'content-type': 'application/json' })
       return res.end(JSON.stringify({ object: 'list', data: [{ id: MOCK_MODEL }, { id: 'other-model' }] }))
     }
+    if (req.method === 'POST' && req.url === '/v1/audio/transcriptions') return mockTranscription(req, res, calls)
     if (req.method !== 'POST' || req.url !== '/v1/chat/completions') { res.writeHead(404); return res.end('not found') }
     let body = ''
     for await (const c of req) body += c

@@ -10,6 +10,7 @@ interface SettingsView {
   systemPrompt: string
   systemPromptIsDefault: boolean
   defaultSystemPrompt: string
+  asr: { baseUrl: string; model: string; hasApiKey: boolean; keySource: 'settings' | 'env' | 'none'; segmentSeconds: number; env: { baseUrl: string; model: string; hasApiKey: boolean; segmentSeconds: number }; maxUploadMb: number }
 }
 
 export function SettingsDialog({ me, onClose }: { me: Me; onClose: () => void }) {
@@ -21,11 +22,15 @@ export function SettingsDialog({ me, onClose }: { me: Me; onClose: () => void })
   const [prompt, setPrompt] = useState('')
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [testing, setTesting] = useState(false)
+  const [asr, setAsr] = useState({ baseUrl: '', model: '', apiKey: '', segmentSeconds: '28' })
+  const [asrMsg, setAsrMsg] = useState<{ ok: boolean; text: string } | null>(null)
+  const [asrTesting, setAsrTesting] = useState(false)
   const [pw, setPw] = useState({ current: '', next: '' })
   const [pwMsg, setPwMsg] = useState<{ ok: boolean; text: string } | null>(null)
 
   const load = (v: SettingsView) => { setView(v); setBaseUrl(v.llm.baseUrl); setModel(v.llm.model); setPrompt(v.systemPrompt); setApiKey('') }
-  useEffect(() => { if (me.isAdmin) api<SettingsView>('GET', '/api/settings').then(load).catch((e) => setMsg({ ok: false, text: e.message })) }, [me.isAdmin])
+  const loadAsr = (v: SettingsView) => { setView(v); setAsr({ baseUrl: v.asr.baseUrl, model: v.asr.model, apiKey: '', segmentSeconds: String(v.asr.segmentSeconds) }) }
+  useEffect(() => { if (me.isAdmin) api<SettingsView>('GET', '/api/settings').then((v) => { load(v); loadAsr(v) }).catch((e) => setMsg({ ok: false, text: e.message })) }, [me.isAdmin])
 
   const save = async (extra: Record<string, unknown> = {}) => {
     try {
@@ -40,6 +45,20 @@ export function SettingsDialog({ me, onClose }: { me: Me; onClose: () => void })
       const r = await api<{ ok: boolean; message: string; code?: string }>('POST', '/api/settings/test', { baseUrl, model, apiKey })
       setMsg({ ok: r.ok, text: (r.code ? `[${r.code}] ` : '') + r.message })
     } catch (e) { setMsg({ ok: false, text: (e as Error).message }) } finally { setTesting(false) }
+  }
+  const saveAsr = async (extra: Record<string, unknown> = {}) => {
+    try {
+      const v = await api<SettingsView>('PUT', '/api/settings', { asrBaseUrl: asr.baseUrl, asrModel: asr.model, asrSegmentSeconds: asr.segmentSeconds, ...(asr.apiKey ? { asrApiKey: asr.apiKey } : {}), ...extra })
+      loadAsr(v)
+      setAsrMsg({ ok: true, text: t('settingsSaved') })
+    } catch (e) { setAsrMsg({ ok: false, text: (e as Error).message }) }
+  }
+  const testAsr = async () => {
+    setAsrTesting(true); setAsrMsg(null)
+    try {
+      const r = await api<{ ok: boolean; text?: string; code?: string; message?: string; latencyMs?: number }>('POST', '/api/settings/asr/test', { baseUrl: asr.baseUrl, model: asr.model, apiKey: asr.apiKey })
+      setAsrMsg(r.ok ? { ok: true, text: t('asrTestOk', { ms: r.latencyMs ?? 0, text: r.text ? `「${r.text.slice(0, 40)}」` : t('asrTestEmpty') }) } : { ok: false, text: `[${r.code}] ${r.message}` })
+    } catch (e) { setAsrMsg({ ok: false, text: (e as Error).message }) } finally { setAsrTesting(false) }
   }
   const changePw = async () => {
     try { await api('POST', '/api/auth/password', pw); setPw({ current: '', next: '' }); setPwMsg({ ok: true, text: t('passwordChanged') }) } catch (e) { setPwMsg({ ok: false, text: (e as Error).message }) }
@@ -73,6 +92,29 @@ export function SettingsDialog({ me, onClose }: { me: Me; onClose: () => void })
               <button className="btn ghost" onClick={() => { setPrompt(view.defaultSystemPrompt); save({ resetSystemPrompt: true, systemPrompt: undefined }) }}>{t('resetDefault')}</button>
             </div>
             {msg && <div className={msg.ok ? 'ok-msg' : 'error'}>{msg.text}</div>}
+
+            <h3 className="section-gap">{t('asrSection')}</h3>
+            <div className="hint">{t('asrSectionHint')}</div>
+            <label>{t('baseUrl')}<input data-testid="asr-base-url" value={asr.baseUrl} onChange={(e) => setAsr({ ...asr, baseUrl: e.target.value })} placeholder="https://api.openai.com/v1" /></label>
+            {view.asr.env.baseUrl && <div className="hint">{t('envDefault', { v: view.asr.env.baseUrl })}</div>}
+            <div className="field">
+              <div className="field-label">{t('model')}</div>
+              <ModelPicker value={asr.model} onChange={(m) => setAsr((a) => ({ ...a, model: m }))} baseUrl={asr.baseUrl} apiKey={asr.apiKey} placeholder="gpt-transcribe / SenseVoiceSmall / Ming-3.0-asr-tiny" endpoint="/api/settings/asr/models" testId="asr-model" />
+            </div>
+            <label>{t('apiKey')}<input type="password" autoComplete="off" value={asr.apiKey} onChange={(e) => setAsr({ ...asr, apiKey: e.target.value })} placeholder={t('asrKeyPlaceholder')} /></label>
+            <div className="hint">
+              {view.asr.hasApiKey ? t('apiKeySet', { source: view.asr.keySource === 'settings' ? 'settings' : 'ASR_API_KEY' }) : t('apiKeyNone')}
+              {view.asr.keySource === 'settings' && <button className="link" onClick={() => saveAsr({ clearAsrApiKey: true })}>{t('clearKey')}</button>}
+            </div>
+            <label>{t('asrSegment')}
+              <span className="row gap"><input type="number" min={5} max={600} step={1} className="num" value={asr.segmentSeconds} onChange={(e) => setAsr({ ...asr, segmentSeconds: e.target.value })} /> <span className="muted">{t('seconds')}</span></span>
+            </label>
+            <div className="hint">{t('asrSegmentHint', { mb: view.asr.maxUploadMb })}</div>
+            <div className="row gap">
+              <button className="btn primary" data-testid="asr-save" onClick={() => saveAsr()}>{t('save')}</button>
+              <button className="btn" data-testid="asr-test" onClick={testAsr} disabled={asrTesting}>{asrTesting ? t('testing') : t('testConnection')}</button>
+            </div>
+            {asrMsg && <div className={asrMsg.ok ? 'ok-msg' : 'error'} data-testid="asr-msg">{asrMsg.text}</div>}
           </section>
         )
       ) : (

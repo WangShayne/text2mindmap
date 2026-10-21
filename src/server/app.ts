@@ -3,7 +3,8 @@ import { Hono, type Context } from 'hono'
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie'
 import { streamSSE } from 'hono/streaming'
 import { bodyLimit } from 'hono/body-limit'
-import type { AppConfig } from './config'
+import { clampSegmentSeconds, type AppConfig } from './config'
+import { testAsr, transcribe, type AsrConfig } from './asr'
 import { getSetting, setSetting, type DB } from './db'
 import { SecretBox } from './secrets'
 import { SetupCode } from './setupCode'
@@ -19,7 +20,13 @@ type Env = { Variables: { user: User } }
 
 export interface AppDeps { db: DB; config: AppConfig; secretBox: SecretBox; setupCode: SetupCode; version?: string }
 
-const K = { baseUrl: 'llm_base_url', model: 'llm_model', apiKey: 'llm_api_key_enc', prompt: 'system_prompt' } as const
+const K = {
+  baseUrl: 'llm_base_url', model: 'llm_model', apiKey: 'llm_api_key_enc', prompt: 'system_prompt',
+  asrBaseUrl: 'asr_base_url', asrModel: 'asr_model', asrApiKey: 'asr_api_key_enc', asrSegment: 'asr_segment_seconds',
+} as const
+
+const TRANSCRIBE_PATH = '/api/transcribe'
+const AUDIO_TYPES = /^(audio\/[\w.+-]+|application\/octet-stream)$/i
 
 export function effectiveLlm(deps: AppDeps): LlmConfig & { keySource: 'settings' | 'env' | 'none' } {
   const { db, config, secretBox } = deps
@@ -36,6 +43,25 @@ export function effectiveLlm(deps: AppDeps): LlmConfig & { keySource: 'settings'
     temperature: config.llmTemperature,
     timeoutMs: config.llmTimeoutMs,
     keySource,
+  }
+}
+
+export function effectiveAsr(deps: AppDeps): AsrConfig & { keySource: 'settings' | 'env' | 'none'; segmentSeconds: number } {
+  const { db, config, secretBox } = deps
+  const enc = getSetting(db, K.asrApiKey)
+  let apiKey = config.asrApiKey
+  let keySource: 'settings' | 'env' | 'none' = apiKey ? 'env' : 'none'
+  if (enc) {
+    try { apiKey = secretBox.decrypt(enc); keySource = 'settings' } catch { console.error('[error] Stored ASR API key cannot be decrypted (APP_SECRET changed?). Falling back to ASR_API_KEY.') }
+  }
+  const seg = Number(getSetting(db, K.asrSegment))
+  return {
+    baseUrl: (getSetting(db, K.asrBaseUrl) || config.asrBaseUrl).replace(/\/+$/, ''),
+    model: getSetting(db, K.asrModel) || config.asrModel,
+    apiKey,
+    timeoutMs: config.asrTimeoutMs,
+    keySource,
+    segmentSeconds: seg > 0 ? clampSegmentSeconds(seg) : config.asrSegmentSeconds,
   }
 }
 
@@ -111,7 +137,9 @@ export function createApp(deps: AppDeps) {
   app.use('/api/*', async (c, next) => {
     if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) {
       const ct = c.req.header('content-type') ?? ''
-      if (!ct.includes('application/json')) return c.json({ error: 'Content-Type must be application/json' }, 415)
+      // Raw audio uploads use an audio/* type; like JSON it is not a CORS-simple type, so it also forces a preflight.
+      const audioOk = c.req.path === TRANSCRIBE_PATH && AUDIO_TYPES.test(ct.split(';')[0].trim())
+      if (!ct.includes('application/json') && !audioOk) return c.json({ error: c.req.path === TRANSCRIBE_PATH ? 'Send the audio as the request body with Content-Type audio/wav (or another audio/* type)' : 'Content-Type must be application/json' }, 415)
       const origin = c.req.header('origin')
       if (origin) {
         const host = requestHost(c, config)
@@ -120,7 +148,9 @@ export function createApp(deps: AppDeps) {
     }
     await next()
   })
-  app.use('/api/*', bodyLimit({ maxSize: Math.max(config.maxInputChars * 4 + 65_536, 4 * 1024 * 1024), onError: (c) => c.json({ error: 'Request body too large' }, 413) }))
+  const jsonLimit = bodyLimit({ maxSize: Math.max(config.maxInputChars * 4 + 65_536, 4 * 1024 * 1024), onError: (c) => c.json({ error: 'Request body too large' }, 413) })
+  // /api/transcribe enforces its own (larger) limit while streaming.
+  app.use('/api/*', (c, next) => (c.req.path === TRANSCRIBE_PATH ? next() : jsonLimit(c, next)))
 
   // ---------- public ----------
   app.get('/api/health', (c) => c.json({ ok: true, name: APP_NAME, version: deps.version ?? 'dev' }))
@@ -309,11 +339,26 @@ export function createApp(deps: AppDeps) {
       defaultSystemPrompt: DEFAULT_SYSTEM_PROMPT,
       chunkChars: config.llmChunkChars,
       maxInputChars: config.maxInputChars,
+      asr: (() => {
+        const a = effectiveAsr(deps)
+        return {
+          baseUrl: a.baseUrl, model: a.model, hasApiKey: !!a.apiKey, keySource: a.keySource, segmentSeconds: a.segmentSeconds,
+          env: { baseUrl: config.asrBaseUrl, model: config.asrModel, hasApiKey: !!config.asrApiKey, segmentSeconds: config.asrSegmentSeconds },
+          maxUploadMb: Math.round(config.asrMaxBytes / 1024 / 1024),
+        }
+      })(),
     }
   }
   app.get('/api/settings', adminOnly, (c) => c.json(settingsView()))
   // Non-admin users only learn which model is in use.
-  app.get('/api/settings/public', (c) => { const l = effectiveLlm(deps); return c.json({ model: l.model, configured: !!l.baseUrl && !!l.model, maxInputChars: config.maxInputChars, chunkChars: config.llmChunkChars }) })
+  app.get('/api/settings/public', (c) => {
+    const l = effectiveLlm(deps)
+    const a = effectiveAsr(deps)
+    return c.json({
+      model: l.model, configured: !!l.baseUrl && !!l.model, maxInputChars: config.maxInputChars, chunkChars: config.llmChunkChars,
+      asr: { configured: !!a.baseUrl && !!a.model, segmentSeconds: a.segmentSeconds, maxUploadBytes: config.asrMaxBytes },
+    })
+  })
 
   app.put('/api/settings', adminOnly, async (c) => {
     const b = await c.req.json().catch(() => ({}))
@@ -327,6 +372,21 @@ export function createApp(deps: AppDeps) {
     if (b.model !== undefined) { const m = String(b.model).trim(); setSetting(db, K.model, m && m !== config.llmModel ? m : null) }
     if (b.clearApiKey === true) setSetting(db, K.apiKey, null)
     else if (typeof b.apiKey === 'string' && b.apiKey.trim()) setSetting(db, K.apiKey, deps.secretBox.encrypt(b.apiKey.trim()))
+    if (b.asrBaseUrl !== undefined) {
+      const v = String(b.asrBaseUrl).trim()
+      if (v && !/^https?:\/\/[^\s]+$/i.test(v)) return c.json({ error: 'ASR Base URL must start with http:// or https://' }, 400)
+      const norm = v.replace(/\/+$/, '')
+      setSetting(db, K.asrBaseUrl, norm && norm !== config.asrBaseUrl ? norm : null)
+    }
+    if (b.asrModel !== undefined) { const m = String(b.asrModel).trim(); setSetting(db, K.asrModel, m && m !== config.asrModel ? m : null) }
+    if (b.clearAsrApiKey === true) setSetting(db, K.asrApiKey, null)
+    else if (typeof b.asrApiKey === 'string' && b.asrApiKey.trim()) setSetting(db, K.asrApiKey, deps.secretBox.encrypt(b.asrApiKey.trim()))
+    if (b.asrSegmentSeconds !== undefined) {
+      const n = Number(b.asrSegmentSeconds)
+      if (b.asrSegmentSeconds === null || b.asrSegmentSeconds === '') setSetting(db, K.asrSegment, null)
+      else if (!Number.isFinite(n) || n <= 0) return c.json({ error: 'Max segment length must be a number of seconds' }, 400)
+      else { const v = clampSegmentSeconds(n); setSetting(db, K.asrSegment, v !== config.asrSegmentSeconds ? String(v) : null) }
+    }
     if (b.resetSystemPrompt === true) setSetting(db, K.prompt, null)
     else if (typeof b.systemPrompt === 'string') {
       const p = b.systemPrompt.trim()
@@ -346,6 +406,61 @@ export function createApp(deps: AppDeps) {
     }
     const r = await testConnection(cfg)
     return c.json({ ...r, message: r.message.split(cfg.apiKey || '\u0000').join('***') })
+  })
+
+  // ASR settings helpers: same pattern as the LLM ones (typed values first, saved values as fallback).
+  const asrFromForm = (b: Record<string, unknown>): AsrConfig | Response => {
+    const cur = effectiveAsr(deps)
+    const typedUrl = typeof b.baseUrl === 'string' ? b.baseUrl.trim() : ''
+    if (typedUrl && !/^https?:\/\/[^\s]+$/i.test(typedUrl)) return Response.json({ error: 'ASR Base URL must start with http:// or https://' }, { status: 400 })
+    return {
+      ...cur,
+      baseUrl: typedUrl ? typedUrl.replace(/\/+$/, '') : cur.baseUrl,
+      model: typeof b.model === 'string' && b.model.trim() ? b.model.trim() : cur.model,
+      apiKey: typeof b.apiKey === 'string' && b.apiKey.trim() ? b.apiKey.trim() : cur.apiKey,
+    }
+  }
+  app.post('/api/settings/asr/test', adminOnly, async (c) => {
+    const cfg = asrFromForm(await c.req.json().catch(() => ({})))
+    if (cfg instanceof Response) return cfg
+    return c.json(await testAsr(cfg))
+  })
+  app.post('/api/settings/asr/models', adminOnly, async (c) => {
+    const cfg = asrFromForm(await c.req.json().catch(() => ({})))
+    if (cfg instanceof Response) return cfg
+    return c.json(await listModels(cfg.baseUrl, cfg.apiKey, 15_000))
+  })
+
+  // Speech to text for any logged-in user. Body: raw audio (audio/wav recommended), Content-Length required.
+  // Query: name, language, prompt. The audio is streamed to {ASR base}/audio/transcriptions.
+  app.post(TRANSCRIBE_PATH, async (c) => {
+    const asr = effectiveAsr(deps)
+    if (!asr.baseUrl || !asr.model) return c.json({ ok: false, code: 'not_configured', message: 'Speech recognition is not configured. Ask the admin to set the ASR Base URL and model in Settings.' }, 503)
+    const len = Number(c.req.header('content-length'))
+    if (!Number.isFinite(len) || len <= 0 || !Number.isInteger(len)) return c.json({ ok: false, code: 'length_required', message: 'Content-Length is required.' }, 411)
+    if (len > config.asrMaxBytes) return c.json({ ok: false, code: 'too_large', message: `Audio segment too large (${(len / 1048576).toFixed(1)} MB, max ${(config.asrMaxBytes / 1048576).toFixed(0)} MB per request). Lower "Max segment length" in Settings.` }, 413)
+    const raw = c.req.raw.body
+    if (!raw) return c.json({ ok: false, code: 'bad_request', message: 'Empty body.' }, 400)
+    // Count bytes as they pass so a client cannot send more than it declared.
+    let seen = 0
+    const counted = raw.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+      transform(chunk, ctl) { seen += chunk.byteLength; if (seen > len) ctl.error(new Error('Body longer than Content-Length')); else ctl.enqueue(chunk) },
+    }))
+    const q = (k: string, max: number) => (c.req.query(k) ?? '').trim().slice(0, max)
+    const language = q('language', 16)
+    const ct = (c.req.header('content-type') ?? 'audio/wav').split(';')[0].trim().toLowerCase()
+    const ext = ({ 'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/wave': 'wav', 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3', 'audio/mp4': 'm4a', 'audio/x-m4a': 'm4a', 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/flac': 'flac' } as Record<string, string>)[ct] ?? 'wav'
+    const ac = new AbortController()
+    c.req.raw.signal?.addEventListener('abort', () => ac.abort(), { once: true })
+    const r = await transcribe(asr, {
+      audio: counted, size: len, filename: `${(q('name', 60) || 'segment').replace(/\.[^.]*$/, '')}.${ext}`, contentType: ct,
+      language: /^[a-zA-Z-]{2,16}$/.test(language) && language !== 'auto' ? language : undefined,
+      prompt: q('prompt', 1000) || undefined,
+      signal: ac.signal,
+    })
+    if (r.ok) return c.json(r)
+    const status = r.code === 'not_configured' ? 503 : r.code === 'timeout' ? 504 : r.code === 'too_large' ? 413 : r.code === 'aborted' ? 499 : 502
+    return c.json(r, status as 502)
   })
 
   // Lists the provider's models for the settings form. Uses the Base URL / key typed in the form when

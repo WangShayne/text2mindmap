@@ -13,6 +13,7 @@ Paste an article, notes or a transcript, and the LLM writes a Markdown outline t
 - **Regenerate**: replace the whole document (asks before overwriting your edits) or **expand the selected node** with new children.
 - **Two-way editing**: Markdown editor (CodeMirror 6) on the left, mind map ([simple-mind-map](https://github.com/wanglin2/mind-map)) on the right. On the map: Tab adds a child, Enter a sibling, F2 edits, Del deletes, drag to move a node to a new parent, Ctrl+Z / Ctrl+Y undo and redo, `/` folds a branch.
 - **Stop** a running generation (the upstream request is cancelled). If the model answers with prose instead of an outline, it retries once, then shows a clear error.
+- **Voice input**: record from the microphone or upload an audio file; it is transcribed by any OpenAI-compatible speech-to-text API (self-hosted SenseVoice / Qwen3-ASR / Ming-3.0-asr-tiny, or a cloud API) and the text goes into the input box. See [Self-hosted speech recognition](#self-hosted-speech-recognition).
 - **Documents**: create, rename, delete, import `.md`, autosave, one-click copy of the Markdown.
 - **Export**: Markdown, PNG, SVG, PDF, XMind (browser), OPML and JSON (server).
 - **Admin settings**: Base URL, model, API key (stored encrypted, never sent to the browser), editable system prompt with reset, and a *Test connection* button that tells a bad key (401) from a wrong URL / network error from an unknown model (404), and a *Fetch models* button that loads the provider's `/models` list into a searchable dropdown (you can still type any model name).
@@ -66,6 +67,12 @@ All settings are environment variables (put them in `.env`). LLM settings are de
 | `LLM_TIMEOUT_MS` | `180000` | Timeout of one LLM request. |
 | `LLM_CHUNK_CHARS` | `12000` | Texts longer than this are split into parts and merged. |
 | `MAX_INPUT_CHARS` | `200000` | Largest accepted input text. |
+| `ASR_BASE_URL` | *(empty: voice input off)* | OpenAI-compatible speech-to-text base URL including `/v1`; `/audio/transcriptions` is appended. See [Self-hosted speech recognition](#self-hosted-speech-recognition). |
+| `ASR_API_KEY` | *(empty)* | Key for the ASR server. Optional for local servers. |
+| `ASR_MODEL` | *(empty)* | ASR model name, e.g. `SenseVoiceSmall`, `Ming-3.0-asr-tiny`, `gpt-transcribe`. |
+| `ASR_SEGMENT_SECONDS` | `28` | Longest audio segment per request (5–600). Keep ≤ 28 for providers with a 30 s limit. |
+| `ASR_TIMEOUT_MS` | `120000` | Timeout of one transcription request. |
+| `ASR_MAX_UPLOAD_MB` | `25` | Upload limit per `/api/transcribe` request. |
 | `APP_SECRET` | *(generated)* | Secret used to encrypt the API key saved in Settings (AES-256-GCM, key derived with HKDF). **Recommended.** If empty, a random one is generated into `data/secret.key` and a warning is logged. |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | *(empty)* | Create the admin on first start instead of using the setup page (no setup code needed). Ignored once a user exists. |
 | `COOKIE_SECURE` | `auto` | `Secure` flag of the session cookie: `auto` (when HTTPS is detected), `true`, `false`. |
@@ -95,6 +102,37 @@ When the map writes Markdown back, it uses a canonical form: `#` for the root, `
 3. Feedback loops are avoided in two ways: editor changes made by the map are tagged and never re-render the map, and the app remembers the canonical Markdown currently on the map and ignores change events that match it (echoes of its own renders).
 
 The renderer sits behind a small interface (`src/web/src/mindmap/adapter.ts`), and the Markdown/tree conversion lives in `src/shared/`, so simple-mind-map could be replaced (for example with mind-elixir) by writing another adapter.
+
+## Self-hosted speech recognition
+
+The *Generate* dialog can turn speech into text before the outline is made: **record** from the microphone (text appears every ~8 s) or **upload an audio file** (mp3, m4a, wav, webm, ogg, flac…). The text lands in the input box, so you can fix it before clicking *Start*.
+
+How it works: the browser decodes the audio with the Web Audio API, converts it to **16 kHz mono 16-bit WAV** and splits it into segments of at most *Max segment length* (default **28 s**, cut at a quiet moment so words stay whole). Segments are sent one by one to `POST /api/transcribe`, which streams them to `{ASR Base URL}/audio/transcriptions` (OpenAI-compatible multipart, `response_format=json`; `text` and `verbose_json` answers are accepted too). Nothing is converted on the server, so the Docker image needs no ffmpeg. The ASR key is stored encrypted like the LLM key and never sent to the browser.
+
+Configure it in **Settings → Speech recognition** (Base URL, model, API key, max segment length, *Test connection*, *Fetch models*), or with the `ASR_*` variables below. Any service with an OpenAI-compatible `/v1/audio/transcriptions` endpoint works:
+
+| Option | Base URL / model | Notes |
+|---|---|---|
+| **CPU only: SenseVoice-Small** via FunASR [`sensevoice-server`](https://www.funasr.com/en/deploy/sensevoice-native-server.html) | `http://<host>:8040/v1`, model `SenseVoiceSmall` (check `/v1/models`) | Recommended for a small server. One C++ binary, no Python runtime, GGUF model, server-side VAD. Chinese, Cantonese, English, Japanese, Korean. Run it as a separate service or container next to text2mindmap. It has no authentication: keep it on `127.0.0.1` or a private Docker network. |
+| **GPU: Qwen3-ASR** + vLLM | e.g. `vllm serve Qwen/Qwen3-ASR-1.7B` → `http://<host>:8000/v1`, model `Qwen/Qwen3-ASR-1.7B` | Higher accuracy, many languages. Apache-2.0. See the model card for the vLLM version and flags. |
+| **GPU: [Ming-3.0-asr-tiny](https://huggingface.co/inclusionAI/Ming-3.0-asr-tiny)** (inclusionAI, 9B, MIT) | your server's `/v1`, model `Ming-3.0-asr-tiny` | Fits a single GPU. Works through any server that exposes it as an OpenAI-compatible `/v1/audio/transcriptions` endpoint. |
+| **Cloud: Ant Ling** (Ming-3.0-asr-tiny) | `https://api.ant-ling.com/v1`, model `Ming-3.0-asr-tiny` | At most **30 s and 10 MB per request**, WAV or MP3 only, JSON answers only. The defaults (16 kHz WAV, 28 s segments, `response_format=json`) already fit. |
+| **Cloud: OpenAI** | `https://api.openai.com/v1`, model `gpt-transcribe` | 25 MB per request. OpenAI marks `whisper-1`, `gpt-4o-transcribe` and `gpt-4o-mini-transcribe` as deprecated; use `gpt-transcribe` for new setups. |
+
+For providers without a 30 s limit you can raise *Max segment length* (e.g. 120 s, about 3.8 MB per segment). Longer segments give the model more context but text appears less often.
+
+**Example: SenseVoice as a separate container on the same Docker network** (this is how our demo is set up):
+
+- Build `sensevoice-server` as described in the [FunASR guide](https://www.funasr.com/en/deploy/sensevoice-native-server.html) and package it as an image (there is no official prebuilt image). Name the container / compose service `sensevoice`, listen on `0.0.0.0:8040` inside the container, **do not publish the port on the host**, and attach it only to the network text2mindmap is on. Example command: `sensevoice-server -m model/sensevoice-small-q8.gguf -vad model/fsmn-vad.gguf --threads 8 --max-connections 2 --max-audio-seconds 300 0.0.0.0 8040`.
+- In text2mindmap, **Settings → Speech recognition**: Base URL `http://sensevoice:8040/v1`, model `sensevoice-small` (as listed by `/v1/models`), **API key empty** (the server has no authentication; with an empty key no `Authorization` header is sent), max segment length 28.
+- Or in `.env`: `ASR_BASE_URL=http://sensevoice:8040/v1` and `ASR_MODEL=sensevoice-small`.
+- `--max-connections 2` means two requests at a time. Each browser sends its segments one after another, which is enough for a few users.
+
+If the ASR server runs on the Docker host, use `http://host.docker.internal:<port>/v1` and make it listen on an address the container can reach (the Docker bridge, e.g. `172.17.0.1`, not `127.0.0.1`). Easier: run it as another service in the same `docker-compose.yml` and use `http://<service-name>:<port>/v1`.
+
+**The microphone needs HTTPS** (browsers only allow recording on `https://` pages and `http://localhost`). Uploading audio files works over plain HTTP too. Behind nginx / 1Panel, make sure `client_max_body_size` is larger than one segment (nginx's default of 1 MB just fits a 28 s segment; use `30m` if you raise the segment length).
+
+Limits: audio is decoded in the browser memory, so very long files (more than about an hour) may be slow or fail on low-memory devices. Split them first. The file formats you can upload are the ones your browser can decode (all common browsers handle mp3, m4a/AAC, wav, ogg/opus, webm, flac).
 
 ## Reverse proxy
 
@@ -126,7 +164,7 @@ server {
     server_name mindmap.example.com;
     # ssl_certificate / ssl_certificate_key ...
 
-    client_max_body_size 5m;
+    client_max_body_size 30m;   # audio segments for speech recognition
 
     location / {
         proxy_pass http://127.0.0.1:3000;
@@ -165,7 +203,8 @@ Restore by putting `data/` (and `.env`) back and running `docker compose up -d`.
 - Passwords are hashed with scrypt. Sessions are random tokens (stored hashed) in an `HttpOnly`, `SameSite=Lax` cookie. Failed logins are rate-limited (10 per 15 minutes per IP).
 - State-changing requests must be JSON and same-origin (CSRF protection).
 - Serve it over HTTPS when it is reachable from the internet, and set `TRUST_PROXY=true` behind a proxy (see [Reverse proxy](#reverse-proxy)).
-- The LLM receives the text you paste. Use a provider you trust with it.
+- The LLM receives the text you paste, and the ASR server receives your audio. Use providers you trust with it.
+- The ASR key follows the same rules as the LLM key: stored encrypted, never returned. Audio uploads (`/api/transcribe`) need login, must be sent as `audio/*` (not a CORS-simple type, so cross-site pages cannot post them), are size-limited per request and are not stored.
 
 ## Development
 
@@ -198,6 +237,8 @@ scripts/         build, mock LLM, smoke test, license check
 
 本产品思维导图基于SimpleMindMap项目开发，版权归源项目所有（<https://github.com/wanglin2/mind-map>）。
 The mind map in this product is built on the [SimpleMindMap](https://github.com/wanglin2/mind-map) project (MIT).
+
+Speech recognition: the recommended self-hosted model is [SenseVoice](https://github.com/QwenAudio/SenseVoice) (SenseVoice-Small, code under MIT; see its repository for the model license), served by FunASR's `sensevoice-server`. No model is bundled with text2mindmap; you run the ASR server yourself.
 
 Only the free plugins shipped in the `simple-mind-map` npm package are used. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for all bundled packages and their licenses.
 

@@ -22,6 +22,7 @@ h1 { font-size: 20px; margin: 8px 0; } h2 { font-size: 17px; margin: 0; } h3 { f
 .btn.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
 .btn.primary:hover:not(:disabled) { background: var(--primary-2); }
 .btn.danger { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn.danger:hover:not(:disabled) { background: #b91c1c; }
 .btn.ghost { border-color: transparent; background: transparent; }
 .btn.small { padding: 3px 10px; font-size: 12px; }
 .icon-btn { border: 0; background: transparent; border-radius: 6px; padding: 3px 7px; color: #374151; font-size: 15px; }
@@ -124,6 +125,21 @@ textarea.source { min-height: 260px; resize: vertical; }
 .combo-list .check { width: 12px; flex-shrink: 0; }
 .combo-empty { padding: 8px; color: var(--muted); font-size: 12px; }
 .model-picker .hint { margin-top: 6px; }
+.section-gap { margin-top: 28px; padding-top: 18px; border-top: 1px solid var(--border); }
+input.num { width: 110px; }
+.voice { margin-bottom: 8px; }
+.voice-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 10px; border: 1px dashed #c7d2fe; background: #f5f7ff; border-radius: 10px; min-height: 50px; }
+.voice-bar.disabled { border-color: var(--border); background: #f9fafb; }
+.voice-bar .btn { display: inline-flex; align-items: center; gap: 6px; }
+.voice-hint { min-width: 160px; }
+.lang-select { font: inherit; font-size: 13px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; background: #fff; }
+.rec-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--danger); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+.rec-time { font-variant-numeric: tabular-nums; font-weight: 600; }
+.level, .progress { width: 120px; height: 6px; border-radius: 3px; background: #e0e7ff; overflow: hidden; }
+.level span, .progress span { display: block; height: 100%; background: var(--primary); transition: width .15s; }
+.level span { background: var(--ok); }
+.voice .error { margin-top: 6px; }
 .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); background: #111827; color: #fff; padding: 8px 16px; border-radius: 8px; font-size: 13px; z-index: 60; }
 
 @media (max-width: 1180px) {

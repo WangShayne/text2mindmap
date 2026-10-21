@@ -7,12 +7,14 @@ import { useI18n } from '../i18n'
  * you type; any name can still be typed by hand. The API key typed in the form (if any) is sent to the
  * server, which falls back to the stored key; the key is never returned.
  */
-export function ModelPicker({ value, onChange, baseUrl, apiKey, placeholder }: {
+export function ModelPicker({ value, onChange, baseUrl, apiKey, placeholder, endpoint = '/api/settings/models', testId = 'model' }: {
   value: string
   onChange: (v: string) => void
   baseUrl: string
   apiKey: string
   placeholder?: string
+  endpoint?: string
+  testId?: string
 }) {
   const { t } = useI18n()
   const [models, setModels] = useState<string[] | null>(null)
@@ -43,7 +45,7 @@ export function ModelPicker({ value, onChange, baseUrl, apiKey, placeholder }: {
   const fetchModels = async () => {
     setLoading(true); setStatus(null)
     try {
-      const r = await api<{ ok: true; models: string[] } | { ok: false; code: string; message: string }>('POST', '/api/settings/models', { baseUrl, apiKey })
+      const r = await api<{ ok: true; models: string[] } | { ok: false; code: string; message: string }>('POST', endpoint, { baseUrl, apiKey })
       if (r.ok) {
         setModels(r.models)
         setQuery('')
@@ -69,7 +71,7 @@ export function ModelPicker({ value, onChange, baseUrl, apiKey, placeholder }: {
             role="combobox"
             aria-expanded={open}
             aria-autocomplete="list"
-            data-testid="model-input"
+            data-testid={`${testId}-input`}
             onChange={(e) => { onChange(e.target.value); setQuery(e.target.value); if (models?.length) setOpen(true) }}
             onFocus={() => { if (models?.length) { setQuery(''); setOpen(true) } }}
             onKeyDown={(e) => {
@@ -84,7 +86,7 @@ export function ModelPicker({ value, onChange, baseUrl, apiKey, placeholder }: {
             <button type="button" className="combo-toggle" title={t('showModelList')} aria-label={t('showModelList')} onClick={() => { setQuery(''); setOpen((v) => !v) }}>▾</button>
           )}
           {open && !!models?.length && (
-            <div className="combo-list" role="listbox" data-testid="model-list">
+            <div className="combo-list" role="listbox" data-testid={`${testId}-list`}>
               {shown.length === 0 && <div className="combo-empty">{t('noMatch')}</div>}
               {shown.map((m, i) => (
                 <button type="button" role="option" aria-selected={m === value} key={m}
@@ -96,11 +98,11 @@ export function ModelPicker({ value, onChange, baseUrl, apiKey, placeholder }: {
             </div>
           )}
         </div>
-        <button type="button" className="btn" data-testid="fetch-models" onClick={fetchModels} disabled={loading}>
+        <button type="button" className="btn" data-testid={testId === 'model' ? 'fetch-models' : `${testId}-fetch-models`} onClick={fetchModels} disabled={loading}>
           {loading ? <><span className="spinner sm" /> {t('fetchingModels')}</> : <>⟳ {t('fetchModels')}</>}
         </button>
       </div>
-      {status && <div className={`hint ${status.ok ? '' : 'error-text'}`} data-testid="models-status">{status.text}</div>}
+      {status && <div className={`hint ${status.ok ? '' : 'error-text'}`} data-testid={`${testId}-models-status`}>{status.text}</div>}
     </div>
   )
 }

@@ -5,6 +5,9 @@ text2mindmap bundles the following open-source packages in its frontend and serv
 The mind map is built on SimpleMindMap (simple-mind-map, MIT, https://github.com/wanglin2/mind-map).
 本产品思维导图基于SimpleMindMap项目开发，版权归源项目所有。
 
+Speech recognition: text2mindmap recommends, but does not bundle, the SenseVoice model (SenseVoice-Small, https://github.com/QwenAudio/SenseVoice, code under the MIT license; see that repository for the model license), served by FunASR sensevoice-server (https://www.funasr.com/en/deploy/sensevoice-native-server.html). Users download and run it themselves.
+语音识别推荐自托管 SenseVoice 模型（未随本产品分发），版权归源项目所有。
+
 jszip is dual-licensed "(MIT OR GPL-3.0-or-later)"; text2mindmap uses it under the MIT license.
 
 | Package | Version | License |

@@ -16,7 +16,7 @@ export function App() {
   const [docs, setDocs] = useState<DocMeta[]>([])
   const [doc, setDoc] = useState<Doc | null>(null)
   const [dialog, setDialog] = useState<null | 'settings' | 'about'>(null)
-  const [pub, setPub] = useState({ chunkChars: 12000, maxInputChars: 200000, configured: true })
+  const [pub, setPub] = useState<{ chunkChars: number; maxInputChars: number; configured: boolean; asr?: { configured: boolean; segmentSeconds: number } }>({ chunkChars: 12000, maxInputChars: 200000, configured: true })
   const fileInput = useRef<HTMLInputElement>(null)
   const [navOpen, setNavOpen] = useState(false)
 

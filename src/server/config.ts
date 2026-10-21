@@ -15,6 +15,12 @@ export function parseTrustProxy(v: string | undefined): number {
   return Number.isFinite(n) && n > 0 ? Math.min(n, 10) : 0
 }
 
+export const ASR_SEGMENT_MIN = 5
+export const ASR_SEGMENT_MAX = 600
+export function clampSegmentSeconds(n: number): number {
+  return Math.min(ASR_SEGMENT_MAX, Math.max(ASR_SEGMENT_MIN, Math.round(n)))
+}
+
 export interface AppConfig {
   port: number
   host: string
@@ -31,6 +37,14 @@ export interface AppConfig {
   /** Number of reverse proxies in front of the app whose X-Forwarded-* headers are trusted (0 = none). */
   trustProxy: number
   sessionDays: number
+  asrBaseUrl: string
+  asrApiKey: string
+  asrModel: string
+  /** Longest audio segment the browser sends in one request (seconds). */
+  asrSegmentSeconds: number
+  asrTimeoutMs: number
+  /** Per-request upload limit for /api/transcribe, in bytes. */
+  asrMaxBytes: number
   adminUsername?: string
   adminPassword?: string
   staticDir?: string
@@ -54,6 +68,12 @@ export function loadConfig(env = process.env): AppConfig {
     cookieSecure: cs === 'true' ? true : cs === 'false' ? false : 'auto',
     trustProxy: parseTrustProxy(env.TRUST_PROXY),
     sessionDays: int('SESSION_DAYS', 30),
+    asrBaseUrl: (env.ASR_BASE_URL || '').trim().replace(/\/+$/, ''),
+    asrApiKey: env.ASR_API_KEY || '',
+    asrModel: (env.ASR_MODEL || '').trim(),
+    asrSegmentSeconds: clampSegmentSeconds(int('ASR_SEGMENT_SECONDS', 28)),
+    asrTimeoutMs: int('ASR_TIMEOUT_MS', 120_000),
+    asrMaxBytes: int('ASR_MAX_UPLOAD_MB', 25) * 1024 * 1024,
     adminUsername: env.ADMIN_USERNAME || undefined,
     adminPassword: env.ADMIN_PASSWORD || undefined,
     staticDir: env.STATIC_DIR || undefined,
