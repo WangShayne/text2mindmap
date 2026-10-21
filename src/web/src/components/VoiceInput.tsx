@@ -20,7 +20,14 @@ type State =
  * Everything is converted to 16 kHz mono WAV in the browser and sent in short segments;
  * the text is appended to the dialog's text area via onAppend.
  */
-export function VoiceInput({ asr, onAppend, onBusy }: { asr: AsrPublic; onAppend: (text: string, newBlock: boolean) => void; onBusy?: (busy: boolean) => void }) {
+export function VoiceInput({ asr, onAppend, onBusy, isAdmin = false, onOpenSettings }: {
+  asr: AsrPublic
+  onAppend: (text: string, newBlock: boolean) => void
+  onBusy?: (busy: boolean) => void
+  isAdmin?: boolean
+  /** Opens Settings scrolled to the speech recognition section (admins only). */
+  onOpenSettings?: () => void
+}) {
   const { t } = useI18n()
   const [state, setState] = useState<State>({ kind: 'idle' })
   const [error, setError] = useState('')
@@ -122,11 +129,12 @@ export function VoiceInput({ asr, onAppend, onBusy }: { asr: AsrPublic; onAppend
   }
   const cancel = () => { abort.current?.abort(); if (rec.current) void stopRec() }
 
-  if (!asr.configured) return <div className="voice-bar disabled"><span className="muted small">🎙 {t('asrNotConfigured')}</span></div>
+  const off = !asr.configured
+  const recTitle = off ? t('asrConfigureFirst') : mic === 'insecure' ? t('asrNeedHttps') : mic === 'unsupported' ? t('asrNoMicApi') : t('asrRecordHint')
 
   return (
     <div className="voice">
-      <div className="voice-bar">
+      <div className={`voice-bar${off ? ' off' : ''}`}>
         {state.kind === 'recording' ? (
           <>
             <button className="btn danger" data-testid="rec-stop" onClick={stopRec}>■ {t('asrStop')}</button>
@@ -148,12 +156,27 @@ export function VoiceInput({ asr, onAppend, onBusy }: { asr: AsrPublic; onAppend
           </>
         ) : (
           <>
-            <button className="btn" data-testid="rec-start" disabled={mic !== 'ok'} title={mic === 'insecure' ? t('asrNeedHttps') : mic === 'unsupported' ? t('asrNoMicApi') : t('asrRecordHint')} onClick={startRec}>🎙 {t('asrRecord')}</button>
-            <button className="btn" data-testid="audio-upload" title={t('asrUploadHint')} onClick={() => fileRef.current?.click()}>⇪ {t('asrUpload')}</button>
-            <select className="lang-select" value={lang} title={t('asrLanguage')} aria-label={t('asrLanguage')} onChange={(e) => { setLang(e.target.value); localStorage.setItem('t2m.asrLang', e.target.value) }}>
-              {LANGS.map((l) => <option key={l} value={l}>{t(`asrLang_${l}` as never)}</option>)}
-            </select>
-            <span className="muted small grow voice-hint">{mic === 'insecure' ? t('asrNeedHttps') : t('asrHint')}</span>
+            {/* Disabled controls get no mouse events in some browsers, so the tooltip sits on a wrapper. */}
+            <span className="tip-wrap" title={recTitle}>
+              <button className="btn" data-testid="rec-start" disabled={off || mic !== 'ok'} title={recTitle} aria-label={`${t('asrRecord')}: ${recTitle}`} onClick={startRec}>🎙 {t('asrRecord')}</button>
+            </span>
+            <span className="tip-wrap" title={off ? t('asrConfigureFirst') : t('asrUploadHint')}>
+              <button className="btn" data-testid="audio-upload" disabled={off} title={off ? t('asrConfigureFirst') : t('asrUploadHint')} onClick={() => fileRef.current?.click()}>⇪ {t('asrUpload')}</button>
+            </span>
+            <span className="tip-wrap" title={off ? t('asrConfigureFirst') : t('asrLanguage')}>
+              <select className="lang-select" value={lang} disabled={off} title={off ? t('asrConfigureFirst') : t('asrLanguage')} aria-label={t('asrLanguage')} onChange={(e) => { setLang(e.target.value); localStorage.setItem('t2m.asrLang', e.target.value) }}>
+                {LANGS.map((l) => <option key={l} value={l}>{t(`asrLang_${l}` as never)}</option>)}
+              </select>
+            </span>
+            {off ? (
+              <span className="small grow voice-hint muted" data-testid="asr-off-hint">
+                {isAdmin && onOpenSettings
+                  ? <>{t('asrOffAdmin')} <button type="button" className="link" data-testid="asr-open-settings" onClick={onOpenSettings}>{t('asrOpenSettings')}</button></>
+                  : t('asrOffUser')}
+              </span>
+            ) : (
+              <span className="muted small grow voice-hint">{mic === 'insecure' ? t('asrNeedHttps') : t('asrHint')}</span>
+            )}
           </>
         )}
         <input ref={fileRef} type="file" hidden accept="audio/*,video/webm,video/mp4,.mp3,.m4a,.wav,.webm,.ogg,.oga,.opus,.flac,.aac,.mp4" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void onFile(f) }} />

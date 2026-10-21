@@ -16,6 +16,7 @@ export function App() {
   const [docs, setDocs] = useState<DocMeta[]>([])
   const [doc, setDoc] = useState<Doc | null>(null)
   const [dialog, setDialog] = useState<null | 'settings' | 'about'>(null)
+  const [settingsFocus, setSettingsFocus] = useState<'asr' | undefined>(undefined)
   const [pub, setPub] = useState<{ chunkChars: number; maxInputChars: number; configured: boolean; asr?: { configured: boolean; segmentSeconds: number } }>({ chunkChars: 12000, maxInputChars: 200000, configured: true })
   const fileInput = useRef<HTMLInputElement>(null)
   const [navOpen, setNavOpen] = useState(false)
@@ -129,9 +130,9 @@ export function App() {
         </div>
       </aside>
       <main className="main">
-        <Suspense fallback={<div className="center muted">…</div>}>{doc ? <Workspace key={doc.id} doc={doc} onMetaChange={onMetaChange} settings={pub} onImport={() => fileInput.current?.click()} onAbout={() => setDialog('about')} onToggleNav={() => setNavOpen((v) => !v)} /> : <div className="center muted">…</div>}</Suspense>
+        <Suspense fallback={<div className="center muted">…</div>}>{doc ? <Workspace key={doc.id} doc={doc} onMetaChange={onMetaChange} settings={pub} onImport={() => fileInput.current?.click()} onAbout={() => setDialog('about')} onToggleNav={() => setNavOpen((v) => !v)} isAdmin={boot.me.isAdmin} onOpenSettings={(section) => { setSettingsFocus(section); setDialog('settings') }} /> : <div className="center muted">…</div>}</Suspense>
       </main>
-      {dialog === 'settings' && <SettingsDialog me={boot.me} onClose={() => { setDialog(null); api('GET', '/api/settings/public').then(setPub).catch(() => {}) }} />}
+      {dialog === 'settings' && <SettingsDialog me={boot.me} focus={settingsFocus} onClose={() => { setDialog(null); setSettingsFocus(undefined); api('GET', '/api/settings/public').then(setPub).catch(() => {}) }} />}
       {dialog === 'about' && <AboutDialog onClose={() => setDialog(null)} />}
     </div>
   )

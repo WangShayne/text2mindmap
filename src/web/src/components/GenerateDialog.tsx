@@ -7,12 +7,15 @@ import type { Selection } from '../mindmap/adapter'
 
 export type GenRequest = { mode: 'full'; text: string } | { mode: 'expand'; selection: Selection; instructions: string }
 
-export function GenerateDialog({ selection, chunkChars, maxChars, onStart, onClose, initialMode, asr }: {
+export function GenerateDialog({ selection, chunkChars, maxChars, onStart, onClose, initialMode, asr, isAdmin, onOpenSettings }: {
   selection: Selection | null
   chunkChars: number
   maxChars: number
   initialMode: 'full' | 'expand'
   asr: AsrPublic
+  isAdmin?: boolean
+  /** Opens Settings at the given section; the dialog closes first and keeps the typed text. */
+  onOpenSettings?: (section: 'asr') => void
   onStart: (r: GenRequest) => void
   onClose: () => void
 }) {
@@ -42,7 +45,7 @@ export function GenerateDialog({ selection, chunkChars, maxChars, onStart, onClo
       </div>
       {mode === 'full' ? (
         <>
-          <VoiceInput asr={asr} onAppend={appendVoice} onBusy={setVoiceBusy} />
+          <VoiceInput asr={asr} onAppend={appendVoice} onBusy={setVoiceBusy} isAdmin={isAdmin} onOpenSettings={onOpenSettings && (() => { sessionStorage.setItem('t2m.lastInput', text); onClose(); onOpenSettings('asr') })} />
           <textarea className="source" data-testid="source-text" autoFocus rows={14} value={text} onChange={(e) => setText(e.target.value)} placeholder={t('pasteHere')} />
           <div className="hint row between">
             <span>{text.length > chunkChars ? t('willChunk') : ''}</span>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, type Me } from '../api'
 import { useI18n } from '../i18n'
 import { Modal } from './Modal'
@@ -13,7 +13,8 @@ interface SettingsView {
   asr: { baseUrl: string; model: string; hasApiKey: boolean; keySource: 'settings' | 'env' | 'none'; segmentSeconds: number; env: { baseUrl: string; model: string; hasApiKey: boolean; segmentSeconds: number }; maxUploadMb: number }
 }
 
-export function SettingsDialog({ me, onClose }: { me: Me; onClose: () => void }) {
+export function SettingsDialog({ me, onClose, focus }: { me: Me; onClose: () => void; focus?: 'asr' }) {
+  const asrRef = useRef<HTMLHeadingElement>(null)
   const { t } = useI18n()
   const [view, setView] = useState<SettingsView | null>(null)
   const [baseUrl, setBaseUrl] = useState('')
@@ -46,6 +47,12 @@ export function SettingsDialog({ me, onClose }: { me: Me; onClose: () => void })
       setMsg({ ok: r.ok, text: (r.code ? `[${r.code}] ` : '') + r.message })
     } catch (e) { setMsg({ ok: false, text: (e as Error).message }) } finally { setTesting(false) }
   }
+  // Opened from the voice input: jump to the ASR section once the form is rendered.
+  useEffect(() => {
+    if (focus !== 'asr' || !view || !asrRef.current) return
+    asrRef.current.scrollIntoView({ block: 'start' })
+    asrRef.current.parentElement?.querySelector<HTMLInputElement>('[data-testid=asr-base-url]')?.focus({ preventScroll: true })
+  }, [focus, view])
   const saveAsr = async (extra: Record<string, unknown> = {}) => {
     try {
       const v = await api<SettingsView>('PUT', '/api/settings', { asrBaseUrl: asr.baseUrl, asrModel: asr.model, asrSegmentSeconds: asr.segmentSeconds, ...(asr.apiKey ? { asrApiKey: asr.apiKey } : {}), ...extra })
@@ -93,7 +100,7 @@ export function SettingsDialog({ me, onClose }: { me: Me; onClose: () => void })
             </div>
             {msg && <div className={msg.ok ? 'ok-msg' : 'error'}>{msg.text}</div>}
 
-            <h3 className="section-gap">{t('asrSection')}</h3>
+            <h3 className="section-gap" ref={asrRef} id="settings-asr">{t('asrSection')}</h3>
             <div className="hint">{t('asrSectionHint')}</div>
             <label>{t('baseUrl')}<input data-testid="asr-base-url" value={asr.baseUrl} onChange={(e) => setAsr({ ...asr, baseUrl: e.target.value })} placeholder="https://api.openai.com/v1" /></label>
             {view.asr.env.baseUrl && <div className="hint">{t('envDefault', { v: view.asr.env.baseUrl })}</div>}

@@ -28,12 +28,14 @@ export async function copyText(text: string) {
 
 const isDefaultTitle = (s: string) => !s || s === 'Untitled' || s === '未命名'
 
-export function Workspace({ doc, onMetaChange, settings, onImport, onAbout, onToggleNav }: {
+export function Workspace({ doc, onMetaChange, settings, onImport, onAbout, onToggleNav, isAdmin, onOpenSettings }: {
   doc: Doc
   onMetaChange: (d: Partial<Doc> & { id: string }) => void
   settings: { chunkChars: number; maxInputChars: number; configured: boolean; asr?: { configured: boolean; segmentSeconds: number } }
   onImport: () => void
   onAbout: () => void
+  isAdmin?: boolean
+  onOpenSettings?: (section: 'asr') => void
   onToggleNav: () => void
 }) {
   const { t } = useI18n()
@@ -252,7 +254,7 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onAbout, onTo
           <div className="shortcuts">{t('shortcuts')}</div>
         </section>
       </div>
-      {genOpen && <GenerateDialog initialMode={genOpen} selection={selection} chunkChars={settings.chunkChars} maxChars={settings.maxInputChars} asr={settings.asr ?? { configured: false, segmentSeconds: 28 }} onStart={startFromDialog} onClose={() => setGenOpen(null)} />}
+      {genOpen && <GenerateDialog initialMode={genOpen} selection={selection} chunkChars={settings.chunkChars} maxChars={settings.maxInputChars} asr={settings.asr ?? { configured: false, segmentSeconds: 28 }} isAdmin={isAdmin} onOpenSettings={onOpenSettings} onStart={startFromDialog} onClose={() => setGenOpen(null)} />}
       {toast && <div className="toast">{toast}</div>}
     </div>
   )
