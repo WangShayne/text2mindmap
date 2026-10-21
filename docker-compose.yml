@@ -1,7 +1,9 @@
 services:
   text2mindmap:
+    # Prebuilt multi-arch image from GitHub Container Registry (pin a version with TEXT2MINDMAP_IMAGE in .env).
+    # `docker compose up -d --build` builds from the local source instead and tags the result with this name.
+    image: ${TEXT2MINDMAP_IMAGE:-ghcr.io/wangshayne/text2mindmap:latest}
     build: .
-    image: text2mindmap:latest
     container_name: text2mindmap
     restart: unless-stopped
     env_file:
