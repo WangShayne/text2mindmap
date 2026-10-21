@@ -110,15 +110,7 @@ The toolbar (and the cards on an empty document) has three entries: **Text**, **
 
 How it works: the browser decodes the audio with the Web Audio API, converts it to **16 kHz mono 16-bit WAV** and splits it into segments of at most *Max segment length* (default **28 s**, cut at a quiet moment so words stay whole). Segments are sent one by one to `POST /api/transcribe`, which streams them to `{ASR Base URL}/audio/transcriptions` (OpenAI-compatible multipart, `response_format=json`; `text` and `verbose_json` answers are accepted too). Nothing is converted on the server, so the Docker image needs no ffmpeg. The ASR key is stored encrypted like the LLM key and never sent to the browser.
 
-Configure it in **Settings → Speech recognition** (Base URL, model, API key, max segment length, *Test connection*, *Fetch models*), or with the `ASR_*` variables below. Any service with an OpenAI-compatible `/v1/audio/transcriptions` endpoint works:
-
-| Option | Base URL / model | Notes |
-|---|---|---|
-| **CPU only: SenseVoice-Small** via FunASR [`sensevoice-server`](https://www.funasr.com/en/deploy/sensevoice-native-server.html) | `http://<host>:8040/v1`, model `SenseVoiceSmall` (check `/v1/models`) | Recommended for a small server. One C++ binary, no Python runtime, GGUF model, server-side VAD. Chinese, Cantonese, English, Japanese, Korean. Run it as a separate service or container next to text2mindmap. It has no authentication: keep it on `127.0.0.1` or a private Docker network. |
-| **GPU: Qwen3-ASR** + vLLM | e.g. `vllm serve Qwen/Qwen3-ASR-1.7B` → `http://<host>:8000/v1`, model `Qwen/Qwen3-ASR-1.7B` | Higher accuracy, many languages. Apache-2.0. See the model card for the vLLM version and flags. |
-| **GPU: [Ming-3.0-asr-tiny](https://huggingface.co/inclusionAI/Ming-3.0-asr-tiny)** (inclusionAI, 9B, MIT) | your server's `/v1`, model `Ming-3.0-asr-tiny` | Fits a single GPU. Works through any server that exposes it as an OpenAI-compatible `/v1/audio/transcriptions` endpoint. |
-| **Cloud: Ant Ling** (Ming-3.0-asr-tiny) | `https://api.ant-ling.com/v1`, model `Ming-3.0-asr-tiny` | At most **30 s and 10 MB per request**, WAV or MP3 only, JSON answers only. The defaults (16 kHz WAV, 28 s segments, `response_format=json`) already fit. |
-| **Cloud: OpenAI** | `https://api.openai.com/v1`, model `gpt-transcribe` | 25 MB per request. OpenAI marks `whisper-1`, `gpt-4o-transcribe` and `gpt-4o-mini-transcribe` as deprecated; use `gpt-transcribe` for new setups. |
+Configure it in **Settings → Speech recognition** (Base URL, model, API key, max segment length, *Test connection*, *Fetch models*), or with the `ASR_*` variables. Any service with an OpenAI-compatible `/v1/audio/transcriptions` endpoint works. Which model to pick, what it needs and how to configure it: see [Choosing a speech recognition model](#choosing-a-speech-recognition-model).
 
 For providers without a 30 s limit you can raise *Max segment length* (e.g. 120 s, about 3.8 MB per segment). Longer segments give the model more context but text appears less often.
 
@@ -134,6 +126,69 @@ If the ASR server runs on the Docker host, use `http://host.docker.internal:<por
 **The microphone needs HTTPS** (browsers only allow recording on `https://` pages and `http://localhost`). Uploading audio files works over plain HTTP too. Behind nginx / 1Panel, make sure `client_max_body_size` is larger than one segment (nginx's default of 1 MB just fits a 28 s segment; use `30m` if you raise the segment length).
 
 Limits: audio is decoded in the browser memory, so very long files (more than about an hour) may be slow or fail on low-memory devices. Split them first. The file formats you can upload are the ones your browser can decode (all common browsers handle mp3, m4a/AAC, wav, ogg/opus, webm, flac).
+
+## Choosing a speech recognition model
+
+text2mindmap only calls the OpenAI-compatible `POST {ASR_BASE_URL}/audio/transcriptions`: a multipart form with `file`, `model`, `response_format=json`, plus `language` when a *Spoken language* is picked. With a key it sends `Authorization: Bearer <key>`, and the JSON answer must contain `text`. Three kinds of setup:
+
+> Models that run only in the cloud or only on a GPU are **options for the deployer**; they are never the demo's default.
+
+| Category | Model / service | Resources | Mixed zh/en accuracy | Notes |
+|---|---|---|---|---|
+| **1. CPU only** | SenseVoice-Small (`sensevoice-server`) | ~0.3 GB RAM; RTF 0.07–0.09 on a 6-core CPU | 5-min mixed CER 14.3%, English WER 50.8%; often cuts English word endings | Lightest, and the only CPU option with `/v1/realtime` streaming. Setup: see the example in [Self-hosted speech recognition](#self-hosted-speech-recognition). No authentication; keep it internal. |
+| | Qwen3-ASR-0.6B Q8_0 (llama.cpp `llama-server`) | ~1.4 GiB peak RAM; RTF 0.20–0.26 on a 6-core CPU | 5-min mixed CER 8.4–9.1%, English WER 30–31%, Mandarin CER 1.9–2.0% | More accurate, English word endings mostly intact. llama.cpp audio support is experimental: **pin the version** (we tested `server-b11749`). |
+| **2. ≥ 8 GB RAM** | Qwen3-ASR-1.7B Q8_0 (`llama-server`, CPU) or vLLM (GPU) | `llama-server` peak ~4.7 GB; RTF estimated 0.35–0.45 on a 6-core CPU | 5-min mixed CER ~6.0–6.2%, English WER ~20–21% (measured on another machine) | Most accurate. With vLLM / transformers you **must set *Spoken language* to Chinese**, see below. |
+| **3. Cloud API key** | See the cloud table below | Nothing local; billed per minute | Not tested | Audio is sent to a third party. |
+
+The SenseVoice and Qwen3-ASR-0.6B numbers were measured on our demo server (6-core CPU) with `scripts/asr-bench`, on 5 minutes of FLEURS Mandarin and 5 minutes of ASCEND mixed Chinese–English. The 1.7B accuracy was measured on another machine; its speed is an estimate.
+
+**Example: Qwen3-ASR-0.6B with `llama-server`** (files from [`ggml-org/Qwen3-ASR-0.6B-GGUF`](https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF); you need both the model and the mmproj file):
+
+```sh
+llama-server -m Qwen3-ASR-0.6B-Q8_0.gguf --mmproj mmproj-Qwen3-ASR-0.6B-Q8_0.gguf \
+  -t 6 -c 2048 -np 1 --cache-ram 0 --temp 0 \
+  --host 0.0.0.0 --port 8080 --api-key "$QWEN_ASR_KEY"
+```
+
+```env
+ASR_BASE_URL=http://qwen-asr:8080/v1
+ASR_API_KEY=<same as --api-key>
+ASR_MODEL=qwen3-asr-0.6b
+```
+
+- In **Settings → Speech recognition**, fill in the same Base URL, API key and model, and keep max segment length at 28. `llama-server` ignores the model name, but text2mindmap requires one, so any name works.
+- Use a pinned Docker tag such as `ghcr.io/ggml-org/llama.cpp:server-b11749`, not `latest`. Either set `--api-key` or don't publish the port and keep it on an internal network.
+- **Leave *Spoken language* on *Auto language*.** With `language=zh`, silent segments come back as the echoed prompt (`Transcribe audio to text (language: zh).`); without it, 0.6B does not translate mixed speech into English. text2mindmap strips the `language Chinese<asr_text>` prefix, prompt echoes and segments that are only a filler such as 嗯 or "um".
+- **On the same 6-core machine as SenseVoice live captions**, lower `-t` to 2–3 to leave CPU for SenseVoice. At 2 threads RTF is about 0.36–0.40.
+
+**1.7B under vLLM / transformers needs Chinese forced**: without a language it translates mixed Chinese–English speech into English (CER rose to 49% in our test). text2mindmap forwards the *Spoken language* selector next to Record / Upload as the `language` field, and vLLM's Qwen3-ASR then fixes the language. The selector is saved per browser and defaults to *Auto language*; the server cannot force it, so tell users to pick 中文. The `llama-server` runs of 1.7B did not show the translation problem.
+
+```sh
+vllm serve Qwen/Qwen3-ASR-1.7B   # GPU; see the model card for version and flags
+```
+
+```env
+ASR_BASE_URL=http://<host>:8000/v1
+ASR_MODEL=Qwen/Qwen3-ASR-1.7B
+```
+
+**Cloud services** (checked against each provider's official docs, not tested with a key):
+
+| Service | Works directly? | Base URL / model | Notes |
+|---|---|---|---|
+| **OpenAI** | ✅ | `https://api.openai.com/v1`, model `gpt-transcribe` | 25 MB per request. `whisper-1`, `gpt-4o-transcribe` and `gpt-4o-mini-transcribe` are deprecated and will be removed on 2027-02-26. |
+| **Mistral Voxtral 3** | ⚠️ Same format, untested | `https://api.mistral.ai/v1`, model `voxtral-mini-transcribe-3` (versioned ID `voxtral-mini-transcribe-3-0`) | Docs show Bearer auth and multipart `file` / `model` / `language`, answer with `text`. `response_format` is not among its documented fields; use *Test connection* to check it is ignored. Voxtral 3 is a Public Preview with closed weights; whether Realtime 3 handles Chinese is unconfirmed, and text2mindmap does not use realtime anyway. |
+| **Alibaba Cloud Model Studio (Bailian) Qwen3-ASR-Flash** | ❌ Not directly | — | Its OpenAI-compatible mode is only `/compatible-mode/v1/chat/completions` with the audio as `input_audio` in JSON (Base64 or a public URL); there is no `/audio/transcriptions`. `qwen3-asr-flash-filetrans` is an async job API and the realtime model uses WebSocket. You'd need your own translation layer. |
+| **Ant Ling** (Ming-3.0-asr-tiny) | ✅ | `https://api.ant-ling.com/v1`, model `Ming-3.0-asr-tiny` | At most 30 s and 10 MB per request, WAV or MP3 only. The defaults already fit. |
+| Others | Check the docs | — | Anything with an OpenAI-compatible multipart `/v1/audio/transcriptions` that answers JSON `text` works. Press *Test connection* after filling it in. |
+
+```env
+ASR_BASE_URL=https://api.openai.com/v1
+ASR_API_KEY=sk-...
+ASR_MODEL=gpt-transcribe
+```
+
+Self-hosting Ming-3.0-asr-tiny needs one GPU (SGLang-Omni) and is also a deployer option.
 
 ## Reverse proxy
 

@@ -110,15 +110,7 @@ Markdown 是唯一的数据源。导图始终由 Markdown 生成，在导图上�
 
 工作方式：浏览器用 Web Audio API 解码音频，统一转成 **16kHz 单声道 16 位 WAV**，再按「单段最长时长」切段（默认 **28 秒**，在说话停顿处切，不会把一个词切成两半）。各段依次发给 `POST /api/transcribe`，由服务端以流的方式转发到 `{ASR Base URL}/audio/transcriptions`（OpenAI 兼容的 multipart 格式，`response_format=json`，返回 `text` 或 `verbose_json` 也能识别）。服务端不做转码，所以 Docker 镜像里不需要 ffmpeg。ASR 的 Key 和 LLM 的 Key 一样加密保存，不会发给浏览器。
 
-在 **设置 → 语音识别** 里配置（Base URL、模型名、API Key、单段最长时长、「测试连接」、「获取模型列表」），也可以用下面的 `ASR_*` 环境变量。只要提供 OpenAI 兼容的 `/v1/audio/transcriptions` 接口的服务都可以用：
-
-| 方案 | Base URL / 模型名 | 说明 |
-|---|---|---|
-| **只有 CPU：SenseVoice-Small**，用 FunASR 的 [`sensevoice-server`](https://www.funasr.com/en/deploy/sensevoice-native-server.html) | `http://<主机>:8040/v1`，模型名 `SenseVoiceSmall`（以 `/v1/models` 返回的为准） | 小服务器首选。单个 C++ 程序，不需要 Python，GGUF 模型，自带 VAD。支持中文、粤语、英语、日语、韩语。作为独立的服务或容器跟 text2mindmap 一起跑。它本身没有鉴权，只监听 `127.0.0.1` 或内部 Docker 网络。 |
-| **有 GPU：Qwen3-ASR** + vLLM | 例如 `vllm serve Qwen/Qwen3-ASR-1.7B` → `http://<主机>:8000/v1`，模型名 `Qwen/Qwen3-ASR-1.7B` | 准确率更高，支持多种语言，Apache-2.0。vLLM 版本和参数见模型卡片。 |
-| **有 GPU：[Ming-3.0-asr-tiny](https://huggingface.co/inclusionAI/Ming-3.0-asr-tiny)**（inclusionAI，9B，MIT） | 你的服务地址 `/v1`，模型名 `Ming-3.0-asr-tiny` | 单卡可跑。需要用提供 OpenAI 兼容 `/v1/audio/transcriptions` 接口的服务来部署。 |
-| **云服务：蚂蚁百灵 Ant Ling**（Ming-3.0-asr-tiny） | `https://api.ant-ling.com/v1`，模型名 `Ming-3.0-asr-tiny` | 单次请求最多 **30 秒、10MB**，只接受 WAV 或 MP3，只返回 JSON。默认设置（16kHz WAV、28 秒一段、`response_format=json`）已经满足。 |
-| **云服务：OpenAI** | `https://api.openai.com/v1`，模型名 `gpt-transcribe` | 单次 25MB。OpenAI 已把 `whisper-1`、`gpt-4o-transcribe`、`gpt-4o-mini-transcribe` 标为弃用，新配置请用 `gpt-transcribe`。 |
+在 **设置 → 语音识别** 里配置（Base URL、模型名、API Key、单段最长时长、「测试连接」、「获取模型列表」），也可以用 `ASR_*` 环境变量。只要提供 OpenAI 兼容的 `/v1/audio/transcriptions` 接口的服务都可以用。怎么选模型、各自要多少资源、怎么配置，见[语音识别模型选择](#语音识别模型选择)。
 
 没有 30 秒限制的服务可以把「单段最长时长」调大，比如 120 秒（每段约 3.8MB）。段越长，模型能参考的上下文越多，但文字出来得越慢。
 
@@ -134,6 +126,69 @@ Markdown 是唯一的数据源。导图始终由 Markdown 生成，在导图上�
 **录音必须用 HTTPS 访问**（浏览器只允许 `https://` 页面和 `http://localhost` 使用麦克风），上传音频文件不受影响。用 nginx / 1Panel 反代时，`client_max_body_size` 要大于一段音频的大小（nginx 默认 1MB，刚好够 28 秒一段；如果调大了单段时长，建议设成 `30m`）。
 
 限制：音频是在浏览器内存里解码的，特别长的文件（超过 1 小时左右）在内存小的设备上可能很慢或失败，建议先切开。能上传哪些格式取决于浏览器能解码哪些格式（主流浏览器都支持 mp3、m4a/AAC、wav、ogg/opus、webm、flac）。
+
+## 语音识别模型选择
+
+text2mindmap 只调用 OpenAI 兼容的 `POST {ASR_BASE_URL}/audio/transcriptions`：multipart 表单，字段 `file`、`model`、`response_format=json`，选了「说话语言」时再加 `language`；填了 Key 就带 `Authorization: Bearer <Key>`，返回 JSON 里要有 `text`。下面按部署条件分三类。
+
+> 只能走云端或只能用 GPU 的模型都是**部署者自己配置的选项**，不会作为演示站的默认模型。
+
+| 类别 | 模型 / 服务 | 需要的资源 | 中英混说效果 | 说明 |
+|---|---|---|---|---|
+| **1. 只有 CPU** | SenseVoice-Small（`sensevoice-server`） | 约 0.3 GB 内存；6 核 CPU 上 RTF 0.07–0.09 | 5 分钟混说 CER 14.3%，英文词错率 50.8%，英文常丢词尾 | 最省资源，也是纯 CPU 上唯一支持 `/v1/realtime` 流式的。部署见[自托管语音识别](#自托管语音识别)里的示例。没有鉴权，只放内网。 |
+| | Qwen3-ASR-0.6B Q8_0（llama.cpp `llama-server`） | 内存峰值约 1.4 GiB；6 核 CPU 上 RTF 0.20–0.26 | 5 分钟混说 CER 8.4–9.1%，英文词错率 30–31%，普通话 CER 1.9–2.0% | 更准，基本不丢英文词尾。llama.cpp 的音频功能还是实验性的，**要固定版本**（我们测的是 `server-b11749`）。 |
+| **2. 内存 ≥ 8 GB** | Qwen3-ASR-1.7B Q8_0（`llama-server`，CPU）或 vLLM（GPU） | `llama-server` 内存峰值约 4.7 GB；6 核 CPU 上 RTF 估算 0.35–0.45 | 5 分钟混说 CER 约 6.0–6.2%，英文词错率约 20–21%（researcher 机器上实测） | 最准。用 vLLM / transformers 跑时**必须把「说话语言」设成中文**，见下文。 |
+| **3. 云端 Key** | 见下面的「云服务」表 | 不占本机资源，按分钟计费 | 未测 | 音频会发给第三方。 |
+
+表中 SenseVoice 和 Qwen3-ASR-0.6B 的数字是在演示服务器（6 核 CPU）上用 `scripts/asr-bench` 实测的，测试音频是 FLEURS 普通话 5 分钟和 ASCEND 中英混说 5 分钟；1.7B 的准确率是在另一台机器上测的，速度是估算。
+
+**示例：Qwen3-ASR-0.6B + `llama-server`**（模型文件来自 [`ggml-org/Qwen3-ASR-0.6B-GGUF`](https://huggingface.co/ggml-org/Qwen3-ASR-0.6B-GGUF)，需要主模型和 mmproj 两个文件）：
+
+```sh
+llama-server -m Qwen3-ASR-0.6B-Q8_0.gguf --mmproj mmproj-Qwen3-ASR-0.6B-Q8_0.gguf \
+  -t 6 -c 2048 -np 1 --cache-ram 0 --temp 0 \
+  --host 0.0.0.0 --port 8080 --api-key "$QWEN_ASR_KEY"
+```
+
+```env
+ASR_BASE_URL=http://qwen-asr:8080/v1
+ASR_API_KEY=<和 --api-key 相同>
+ASR_MODEL=qwen3-asr-0.6b
+```
+
+- 「设置 → 语音识别」里对应填 Base URL、API Key、模型名，单段最长时长保持 28。`llama-server` 不看模型名，但 text2mindmap 要求必填，随便填一个即可。
+- Docker 镜像用固定标签 `ghcr.io/ggml-org/llama.cpp:server-b11749`，不要用 `latest`。要么设 `--api-key`，要么不映射端口、只放在内部网络。
+- **「说话语言」保持「自动识别语言」。** 传 `language=zh` 时，静音片段会把提示词原样返回（`Transcribe audio to text (language: zh).`）；不传时 0.6B 也不会把混说翻译成英文。text2mindmap 会去掉 `language Chinese<asr_text>` 前缀、提示词回显和只有「嗯」「um」这类语气词的片段。
+- **和 SenseVoice 实时识别放在同一台 6 核机器上时**，把 `-t` 降到 2–3，留出 CPU 给 SenseVoice。2 线程时 RTF 约 0.36–0.40。
+
+**1.7B 用 vLLM / transformers 时要固定中文**：不指定语言时，它会把整段中英混说直接翻译成英文（测试里 CER 变成 49%）。text2mindmap 会把录音面板和上传入口旁的「说话语言」作为 `language` 字段转发，vLLM 的 Qwen3-ASR 会据此固定语言。这个选项保存在每个用户自己的浏览器里，默认是「自动识别语言」，服务端没法强制，所以要提醒用户选「中文」。用 `llama-server` 跑 1.7B 的测试里没出现翻译问题。
+
+```sh
+vllm serve Qwen/Qwen3-ASR-1.7B   # GPU；版本和参数见模型卡片
+```
+
+```env
+ASR_BASE_URL=http://<主机>:8000/v1
+ASR_MODEL=Qwen/Qwen3-ASR-1.7B
+```
+
+**云服务**（以下根据各家官方文档核对，没有用 Key 实测）：
+
+| 服务 | 能否直接接入 | Base URL / 模型名 | 说明 |
+|---|---|---|---|
+| **OpenAI** | ✅ | `https://api.openai.com/v1`，模型 `gpt-transcribe` | 单次 25MB。`whisper-1`、`gpt-4o-transcribe`、`gpt-4o-mini-transcribe` 已宣布弃用，2027-02-26 下线。 |
+| **Mistral Voxtral 3** | ⚠️ 格式一致，未实测 | `https://api.mistral.ai/v1`，模型 `voxtral-mini-transcribe-3`（带版本号的 ID 是 `voxtral-mini-transcribe-3-0`） | 文档里是 Bearer 鉴权、multipart 的 `file` / `model` / `language`，返回 `text`。`response_format` 不在它的文档字段里，是否被忽略要用「测试连接」确认。Voxtral 3 还是 Public Preview，权重没开源；实时版 Realtime 3 能不能识别中文没有确认，text2mindmap 也不使用实时接口。 |
+| **阿里云百炼 Qwen3-ASR-Flash** | ❌ 暂不支持直接接入 | — | 它的 OpenAI 兼容模式只有 `/compatible-mode/v1/chat/completions`，音频要用 JSON 里的 `input_audio` 传（Base64 或公网 URL），没有 `/audio/transcriptions`。`qwen3-asr-flash-filetrans` 是异步任务，实时版走 WebSocket。需要自行加一层转换服务。 |
+| **蚂蚁百灵 Ant Ling**（Ming-3.0-asr-tiny） | ✅ | `https://api.ant-ling.com/v1`，模型 `Ming-3.0-asr-tiny` | 单次最多 30 秒、10MB，只接受 WAV 或 MP3。默认设置已经满足。 |
+| 其他服务 | 看文档 | — | 只要支持 OpenAI 兼容的 multipart `/v1/audio/transcriptions`、返回 JSON `text` 就能用。填好后点「测试连接」。 |
+
+```env
+ASR_BASE_URL=https://api.openai.com/v1
+ASR_API_KEY=sk-...
+ASR_MODEL=gpt-transcribe
+```
+
+Ming-3.0-asr-tiny 自部署需要 1 张 GPU（SGLang-Omni），也属于部署者自选。
 
 ## 反向代理
 
