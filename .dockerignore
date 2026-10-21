@@ -8,3 +8,4 @@ data
 coverage
 *.log
 tests
+scripts/asr-bench/audio
