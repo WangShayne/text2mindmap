@@ -4,7 +4,7 @@ import { serve } from '@hono/node-server'
 import { WebSocket } from 'ws'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { CODE, makeApp } from './helpers'
-import { normalizeRealtimeUrl } from '../src/server/config'
+import { loadConfig, normalizeRealtimeUrl } from '../src/server/config'
 import { createSession } from '../src/server/auth'
 import { RealtimeAdapter, attachRealtime, mapUpstreamClose, mergeDelta, type RealtimeConfig, type RealtimeHub } from '../src/server/realtime'
 import { CLOSE, classifyClose, type DegradeReason, type RealtimeServerEvent } from '../src/shared/realtime'
@@ -521,6 +521,19 @@ describe('realtime: settings', () => {
     expect(empty.realtime.url).toBe('')
     setCookie('')
     expect((await req('POST', '/api/settings/asr/realtime/test', { url: mock.url })).status).toBe(401)
+  })
+
+  it('max session length defaults to 300 s (sensevoice-server --max-audio-seconds 300) and can be changed', () => {
+    const old = process.env.ASR_REALTIME_MAX_SECONDS
+    try {
+      delete process.env.ASR_REALTIME_MAX_SECONDS
+      expect(loadConfig().asrRealtimeMaxSeconds).toBe(300)
+      process.env.ASR_REALTIME_MAX_SECONDS = '240'
+      expect(loadConfig().asrRealtimeMaxSeconds).toBe(240)
+    } finally {
+      if (old === undefined) delete process.env.ASR_REALTIME_MAX_SECONDS
+      else process.env.ASR_REALTIME_MAX_SECONDS = old
+    }
   })
 
   it('env default can be turned off in Settings; without a segment model realtime runs single-pass', async () => {

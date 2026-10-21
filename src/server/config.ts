@@ -89,7 +89,7 @@ export function loadConfig(env = process.env): AppConfig {
     asrRealtimeUrl: normalizeRealtimeUrl(env.ASR_REALTIME_URL || '') ?? '',
     asrRealtimeApiKey: env.ASR_REALTIME_API_KEY || '',
     asrRealtimeTwoPass: !/^(false|0|no|off)$/i.test((env.ASR_REALTIME_TWO_PASS ?? '').trim()),
-    asrRealtimeMaxSeconds: int('ASR_REALTIME_MAX_SECONDS', 600),
+    asrRealtimeMaxSeconds: int('ASR_REALTIME_MAX_SECONDS', 300), // sensevoice-server --max-audio-seconds 300
     asrRealtimeIdleSeconds: int('ASR_REALTIME_IDLE_SECONDS', 30),
     asrRealtimeMaxSessions: int('ASR_REALTIME_MAX_SESSIONS', 2),
     adminUsername: env.ADMIN_USERNAME || undefined,

@@ -37,6 +37,7 @@ async function main() {
   }
 
   const app = createApp({ db, config, secretBox, setupCode, version })
+  console.log(`[info] Live captions: max session ${config.asrRealtimeMaxSeconds} s (ASR_REALTIME_MAX_SECONDS); keep it <= the realtime ASR server's --max-audio-seconds.`)
   const here = path.dirname(fileURLToPath(import.meta.url))
   const staticDir = config.staticDir ?? path.resolve(here, '../web')
   if (fs.existsSync(path.join(staticDir, 'index.html')) && fs.existsSync(path.join(staticDir, 'assets'))) {

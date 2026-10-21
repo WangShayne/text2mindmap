@@ -103,7 +103,7 @@ All settings are environment variables (put them in `.env`). LLM settings are de
 | `ASR_REALTIME_URL` | *(empty: live captions off)* | Realtime (streaming) ASR WebSocket for live captions, e.g. `ws://sensevoice:8040/v1/realtime?intent=transcription` (`http://sensevoice:8040/v1` is accepted and converted). Needs `ASR_BASE_URL` too. See [Live captions](#live-captions-realtime). |
 | `ASR_REALTIME_TWO_PASS` | `true` | `true`: live captions are a preview and the text still comes from `ASR_MODEL` segment by segment. `false`: the realtime finals are the text. Without `ASR_BASE_URL` / `ASR_MODEL` it is always single-pass. |
 | `ASR_REALTIME_API_KEY` | *(empty)* | Bearer key for the realtime server, only if it needs one (sensevoice-server does not). |
-| `ASR_REALTIME_MAX_SECONDS` | `600` | Longest live-caption session; after that the recording continues with segments only (close code 1009). |
+| `ASR_REALTIME_MAX_SECONDS` | `300` | Longest live-caption session; after that the recording continues with segments only (close code 1009). **Must be ≤ the realtime ASR server's `--max-audio-seconds`** (300 in the examples), otherwise the upstream closes the session with 1009 first and recording falls back to segments. |
 | `ASR_REALTIME_IDLE_SECONDS` | `30` | A session that sends no audio for this long is closed (1001). |
 | `ASR_REALTIME_MAX_SESSIONS` | `2` | Live-caption sessions at once, all users together. Keep it ≤ the realtime server's `--max-connections`. |
 | `APP_SECRET` | *(generated)* | Secret used to encrypt the API key saved in Settings (AES-256-GCM, key derived with HKDF). **Recommended.** If empty, a random one is generated into `data/secret.key` and a warning is logged. |

@@ -103,7 +103,7 @@ LLM_BASE_URL=http://host.docker.internal:3001/v1    # 3001 端口上的 New API 
 | `ASR_REALTIME_URL` | *（空：关闭实时字幕）* | 实时字幕用的流式识别 WebSocket 地址，如 `ws://sensevoice:8040/v1/realtime?intent=transcription`（填 `http://sensevoice:8040/v1` 也会自动转换）。还需要配置 `ASR_BASE_URL`。见[实时字幕](#实时字幕流式识别)。 |
 | `ASR_REALTIME_TWO_PASS` | `true` | `true`：实时字幕只做预览，文字仍由 `ASR_MODEL` 逐段识别；`false`：实时识别的定稿直接作为文字。没有配置 `ASR_BASE_URL` / `ASR_MODEL` 时始终是单遍。 |
 | `ASR_REALTIME_API_KEY` | *（空）* | 实时识别服务需要鉴权时才填（sensevoice-server 不需要）。 |
-| `ASR_REALTIME_MAX_SECONDS` | `600` | 单次实时字幕会话最长时长；超过后录音继续，只用分段识别（关闭码 1009）。 |
+| `ASR_REALTIME_MAX_SECONDS` | `300` | 单次实时字幕会话最长时长；超过后录音继续，只用分段识别（关闭码 1009）。**必须 ≤ 实时识别服务的 `--max-audio-seconds`**（示例中为 300），否则上游会先以 1009 关闭会话，录音降级为分段识别。 |
 | `ASR_REALTIME_IDLE_SECONDS` | `30` | 这么久没有收到音频就关闭会话（1001）。 |
 | `ASR_REALTIME_MAX_SESSIONS` | `2` | 所有用户同时进行的实时字幕会话上限。不要超过实时识别服务的 `--max-connections`。 |
 | `APP_SECRET` | 自动生成 | 用来加密「设置」里保存的 API Key（AES-256-GCM，密钥用 HKDF 派生）。**建议设置。** 不填时会随机生成并保存到 `data/secret.key`，同时在日志里给出警告。 |
