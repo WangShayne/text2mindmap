@@ -9,7 +9,8 @@ import { createSession } from '../src/server/auth'
 import { RealtimeAdapter, attachRealtime, mapUpstreamClose, mergeDelta, type RealtimeConfig, type RealtimeHub } from '../src/server/realtime'
 import { CLOSE, classifyClose, type DegradeReason, type RealtimeServerEvent } from '../src/shared/realtime'
 import { PcmFramer, StreamResampler, floatToPcm16, resample } from '../src/shared/wav'
-import { HeldSegments, LiveCaptions, RealtimeClient } from '../src/web/src/audio/realtime'
+import { HeldSegments, LiveCaptions, RealtimeClient, trimCaption } from '../src/web/src/audio/realtime'
+import { canRecord } from '../src/web/src/audio/useTranscriber'
 // @ts-expect-error plain JS helper
 import { startMockRealtime } from '../scripts/mock-realtime-asr.mjs'
 
@@ -130,19 +131,101 @@ describe('realtime: pure helpers', () => {
     expect(frames).toEqual([3200, 3200, 3200, 400])
   })
 
-  it('live captions: finals replaced by segment text are dropped, the partial stays', () => {
+  it('live captions: finals whose audio is committed by segment text are hidden, the partial stays', () => {
     const c = new LiveCaptions()
     const join = (a: string, b: string) => a + b
-    c.setPartial(0, '今天')
-    c.addFinal(0, '今天天气。', 1000)
-    c.setPartial(1, '明天')
-    c.addFinal(1, '明天下雨。', 3000)
+    c.setPartial(0, '今天', 0.8)
+    c.addFinal(0, '今天天气。', 1.6)
+    c.setPartial(1, '明天', 2.4)
+    c.addFinal(1, '明天下雨。', 3.2)
     expect(c.view(join)).toEqual({ done: '今天天气。明天下雨。', partial: '' })
-    c.setPartial(2, '后天')
-    c.dropUntil(2000)
+    c.setPartial(2, '后天', 4)
+    c.commit(1.7, '今天天气。') // segment cut at 1.7 s: covers the first final (VAD end 1.6 s)
     expect(c.view(join)).toEqual({ done: '明天下雨。', partial: '后天' })
+    c.commit(3.3, '明天下雨。')
+    expect(c.view(join)).toEqual({ done: '', partial: '后天' })
     c.clear()
     expect(c.view(join)).toEqual({ done: '', partial: '' })
+  })
+
+  it('live captions: a long open segment is trimmed where the committed segment ends (no repeated text)', () => {
+    const c = new LiveCaptions()
+    const join = (a: string, b: string) => a + b
+    // One SenseVoice VAD segment runs 0-12 s; the segment model commits 0-8 s.
+    const said = '我们今天讨论一下产品的路线图然后再看看下个季度的预算安排'
+    c.setPartial(0, said, 12)
+    c.commit(8, '我们今天讨论一下产品的路线图然后再看看')
+    const p = c.view(join).partial
+    expect(p).toBe('下个季度的预算安排')
+    // without a matching tail it still cuts by time (2/3 of the text is committed)
+    const d = new LiveCaptions()
+    d.setPartial(0, 'one two three four five six', 12)
+    d.commit(8, '')
+    expect(d.view(join).partial).toBe('five six')
+    // the boundary passing the whole segment hides it
+    c.commit(12.1, '下个季度的预算安排')
+    expect(c.view(join).partial).toBe('')
+  })
+
+  it('trimCaption: fuzzy match against the committed tail beats the time estimate, Latin words stay whole', () => {
+    // time says 50%, but the committed text ends after "预算" (the realtime text differs a bit earlier)
+    expect(trimCaption('我门今天讨论预算，然后看路线图和人员', 0, 10, 5, '我们今天讨论预算，')).toBe('然后看路线图和人员')
+    // ASR wording differs (no shared tail): time cut, then pushed to the end of the English word
+    expect(trimCaption('we should ship the realtime captions next week', 0, 10, 5, '完全不同')).toBe('captions next week')
+    // case-insensitive match on mixed text
+    expect(trimCaption('Hello World 然后 we go home', 0, 6, 3, 'hello world')).toBe('然后 we go home')
+    // boundary before / after the segment
+    expect(trimCaption('文本', 5, 8, 4, 'x')).toBe('文本')
+    expect(trimCaption('文本', 5, 8, 8, 'x')).toBe('')
+    // a matching tail far from the time estimate is ignored (it is an earlier repeat of the phrase)
+    expect(trimCaption('好的好的我们开始第一项然后第二项第三项最后总结一下今天的会议好的', 0, 10, 9.5, '最后总结一下今天的会议好的')).toBe('')
+  })
+
+  it('live captions: finals of single-pass mode (empty caption) leave only the next partial', () => {
+    const c = new LiveCaptions()
+    const join = (a: string, b: string) => a + b
+    c.setPartial(0, '第一句', 1)
+    c.addFinal(0, '', 1.5); c.commit(1.5, '第一句。')
+    c.setPartial(1, '第二', 2.2)
+    expect(c.view(join)).toEqual({ done: '', partial: '第二' })
+    // a late partial for a finished segment is ignored
+    c.setPartial(0, '第一句又来', 1.5)
+    expect(c.view(join).partial).toBe('第二')
+  })
+
+  it('recording is available with a segment model or with live captions alone; upload needs the model', () => {
+    expect(canRecord({ configured: false, segmentSeconds: 28 })).toBe(false)
+    expect(canRecord({ configured: false, segmentSeconds: 28, realtime: true, realtimeTwoPass: false })).toBe(true)
+    expect(canRecord({ configured: true, segmentSeconds: 28 })).toBe(true)
+  })
+
+  it('maps server audio time to the local timeline across dropped frames', () => {
+    class SlowWs {
+      static OPEN = 1
+      readyState = 1; bufferedAmount = 0; binaryType = ''
+      onopen: (() => void) | null = null; onmessage: ((e: { data: string }) => void) | null = null; onclose: (() => void) | null = null; onerror: (() => void) | null = null
+      sent = 0
+      constructor(_u: string) { SlowWs.last = this }
+      static last: SlowWs
+      send() { this.sent++ }
+      close() {}
+    }
+    const rc = new RealtimeClient('ws://x', { onPartial() {}, onFinal() {}, onDegrade() {} }, { WebSocketImpl: SlowWs as never, connectTimeoutMs: 60_000 })
+    rc.connect()
+    const ws = SlowWs.last
+    const frame = () => new Uint8Array(3200) // 0.1 s
+    for (let i = 0; i < 20; i++) rc.sendPcm(frame()) // 0-2 s sent
+    ws.bufferedAmount = 1e9
+    for (let i = 0; i < 10; i++) rc.sendPcm(frame()) // 2-3 s dropped
+    ws.bufferedAmount = 0
+    for (let i = 0; i < 20; i++) rc.sendPcm(frame()) // 3-5 s sent (server sees 2-4 s)
+    expect(ws.sent).toBe(40)
+    expect(rc.offeredSeconds).toBeCloseTo(5)
+    expect(rc.localTime(1.5)).toBeCloseTo(1.5)
+    expect(rc.localTime(2)).toBeCloseTo(3)
+    expect(rc.localTime(3.5)).toBeCloseTo(4.5)
+    expect(rc.localTime(undefined)).toBeCloseTo(5)
+    rc.close()
   })
 })
 
@@ -218,7 +301,10 @@ describe('realtime: /api/realtime proxy against a mock sensevoice-server', () =>
     c.ws.send(JSON.stringify({ type: 'stop' }))
     const cl = await c.closed
     expect(cl.code).toBe(1000)
-    expect(c.events).toEqual([
+    // captions carry the audio time the server had received (seconds), for lining them up with segments
+    const ends = c.events.filter((e) => e.type === 'partial' || e.type === 'final').map((e) => (e as { audioEnd?: number }).audioEnd)
+    expect(ends.every((x) => typeof x === 'number' && x > 0 && x <= 0.3)).toBe(true)
+    expect(c.events.map(({ audioEnd: _a, ...e }: { audioEnd?: number; type: string }) => e)).toEqual([
       { type: 'ready' },
       { type: 'partial', seg: 0, text: '今天' },
       { type: 'partial', seg: 0, text: '今天天气' },
@@ -437,12 +523,19 @@ describe('realtime: settings', () => {
     expect((await req('POST', '/api/settings/asr/realtime/test', { url: mock.url })).status).toBe(401)
   })
 
-  it('env default can be turned off in Settings, and realtime needs the segmented model too', async () => {
+  it('env default can be turned off in Settings; without a segment model realtime runs single-pass', async () => {
     const { req } = makeApp({ asrRealtimeUrl: 'ws://sensevoice:8040/v1/realtime?intent=transcription' })
     await req('POST', '/api/setup', { username: 'admin', password: 'password123', setupCode: CODE })
-    expect((await (await req('GET', '/api/settings/public')).json()).asr.realtime).toBe(false) // no ASR_BASE_URL / model
+    // no ASR_BASE_URL / model: live captions still work, they are the text (two-pass stays on but is not effective)
+    let pub = (await (await req('GET', '/api/settings/public')).json()).asr
+    expect(pub).toMatchObject({ configured: false, realtime: true, realtimeTwoPass: false })
+    let view = await (await req('GET', '/api/settings')).json()
+    expect(view.realtime).toMatchObject({ twoPass: true, segmentConfigured: false, twoPassEffective: false })
     await req('PUT', '/api/settings', { asrBaseUrl: 'http://qwen3-asr:8080/v1', asrModel: 'q' })
-    expect((await (await req('GET', '/api/settings/public')).json()).asr.realtime).toBe(true)
+    pub = (await (await req('GET', '/api/settings/public')).json()).asr
+    expect(pub).toMatchObject({ configured: true, realtime: true, realtimeTwoPass: true })
+    view = await (await req('GET', '/api/settings')).json()
+    expect(view.realtime).toMatchObject({ twoPass: true, segmentConfigured: true, twoPassEffective: true })
     const v = await (await req('PUT', '/api/settings', { asrRealtimeUrl: '' })).json()
     expect(v.realtime).toMatchObject({ url: '', env: { url: 'ws://sensevoice:8040/v1/realtime?intent=transcription' } })
     expect((await (await req('GET', '/api/settings/public')).json()).asr.realtime).toBe(false)

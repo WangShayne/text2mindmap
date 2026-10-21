@@ -4,9 +4,12 @@ export type { DegradeReason } from '../../../shared/realtime'
 
 export interface RealtimeHandlers {
   onReady?: () => void
-  /** Whole current hypothesis of segment `seg` (replaces the previous partial). */
-  onPartial: (seg: number, text: string) => void
-  onFinal: (seg: number, text: string) => void
+  /**
+   * Whole current hypothesis of segment `seg` (replaces the previous partial). `audioEnd`: seconds on
+   * the local audio timeline (from the first frame offered to sendPcm) the text covers at most.
+   */
+  onPartial: (seg: number, text: string, audioEnd: number) => void
+  onFinal: (seg: number, text: string, audioEnd: number) => void
   /** The session ended abnormally (called once). The caller falls back to segmented recognition. */
   onDegrade: (reason: DegradeReason) => void
   /** All finals are in after stop(). */
@@ -60,8 +63,8 @@ export class RealtimeClient {
       try { ev = JSON.parse(e.data) } catch { return }
       switch (ev.type) {
         case 'ready': this.ready = true; clearTimeout(this.readyTimer); this.h.onReady?.(); break
-        case 'partial': this.h.onPartial(ev.seg, ev.text); break
-        case 'final': this.h.onFinal(ev.seg, ev.text); break
+        case 'partial': this.h.onPartial(ev.seg, ev.text, this.localTime(ev.audioEnd)); break
+        case 'final': this.h.onFinal(ev.seg, ev.text, this.localTime(ev.audioEnd)); break
         case 'error': this.lastError = ev.code; break
         case 'done': this.done = true; this.h.onDone?.(); this.release(); break
       }
@@ -74,14 +77,38 @@ export class RealtimeClient {
     ws.onerror = () => {}
   }
 
+  /** Seconds of audio offered to sendPcm so far (the local timeline), and the part of it actually sent. */
+  offeredSeconds = 0
+  private sentSeconds = 0
+  /** Dropped stretches, by the sent-audio time they were dropped at, to map server times back. */
+  private drops: { sentAt: number; len: number }[] = []
+
+  /** Server audio time (counts only frames that reached it) -> local audio time. */
+  localTime(serverSeconds: number | undefined): number {
+    if (typeof serverSeconds !== 'number' || !Number.isFinite(serverSeconds)) return this.offeredSeconds
+    let t = serverSeconds
+    for (const d of this.drops) if (d.sentAt <= serverSeconds + 1e-6) t += d.len
+    return t
+  }
+
+  private drop(len: number) {
+    this.dropped++
+    const last = this.drops[this.drops.length - 1]
+    if (last && last.sentAt === this.sentSeconds) last.len += len
+    else this.drops.push({ sentAt: this.sentSeconds, len })
+  }
+
   /** Sends one PCM16 frame. Frames are dropped (not queued without bound) when the network is slow. */
   sendPcm(frame: Uint8Array<ArrayBuffer>) {
     if (this.ended) return
+    const len = frame.length / 2 / 16000
+    this.offeredSeconds += len
     const ws = this.ws
-    if (!ws || ws.readyState === 0) { if (this.queue.length < 60) this.queue.push(frame); else this.dropped++; return }
+    if (!ws || ws.readyState === 0) { if (this.queue.length < 300) { this.queue.push(frame); this.sentSeconds += len } else this.drop(len); return }
     if (ws.readyState !== 1) return
-    if (ws.bufferedAmount > MAX_BUFFERED_BYTES) { this.dropped++; return }
+    if (ws.bufferedAmount > MAX_BUFFERED_BYTES) { this.drop(len); return }
     ws.send(frame)
+    this.sentSeconds += len
   }
 
   /** End of audio: resolves once the last final arrived, or the session degraded / timed out. */
@@ -121,42 +148,113 @@ export class RealtimeClient {
   private flushWaiters() { const w = this.stopWaiters; this.stopWaiters = []; for (const f of w) f() }
 }
 
+const isContent = (c: string) => /[\p{L}\p{N}]/u.test(c)
+const LATIN = /[A-Za-z0-9']/
+
 /**
- * Captions shown while recording: finals not yet replaced by the batch model's text, plus the
- * current partial. Finals carry the time they arrived; a segment transcribed by the batch model
- * covers all audio up to its cut time, so dropUntil(cutTime) removes the captions it replaces.
+ * Trims the start of a caption that the committed (segment model) text already covers.
+ * The caption covers audio [start, end]; the committed text covers audio up to `boundary`.
+ * First estimate: cut at the time-proportional character position. Then refine: look for the last few
+ * letters of the committed text inside the caption near that estimate (both models usually agree on
+ * a couple of words at the boundary) and cut right after them. Without a match, the estimate is moved
+ * to the end of a Latin word so English is not cut in half. Leading punctuation is dropped.
+ */
+export function trimCaption(text: string, start: number, end: number, boundary: number, committedTail: string): string {
+  if (boundary <= start) return text
+  if (boundary >= end) return ''
+  const chars = [...text]
+  let k = Math.round(chars.length * Math.min(1, Math.max(0, (boundary - start) / Math.max(1e-3, end - start))))
+  const pos: number[] = [], low: string[] = []
+  chars.forEach((c, i) => { if (isContent(c)) { pos.push(i); low.push(c.toLowerCase()) } })
+  const tail = [...committedTail].filter(isContent).map((c) => c.toLowerCase())
+  const win = Math.max(6, Math.round(chars.length * 0.35))
+  let found = false
+  for (const n of [4, 3, 2]) {
+    if (tail.length < n) continue
+    const key = tail.slice(-n).join('')
+    let best = -1
+    for (let j = 0; j + n <= low.length; j++) {
+      if (low.slice(j, j + n).join('') !== key) continue
+      const after = pos[j + n - 1] + 1
+      if (Math.abs(after - k) <= win && (best < 0 || Math.abs(after - k) < Math.abs(best - k))) best = after
+    }
+    if (best >= 0) { k = best; found = true; break }
+  }
+  if (!found) { let m = 0; while (k > 0 && k < chars.length && LATIN.test(chars[k - 1]) && LATIN.test(chars[k]) && m++ < 16) k++ }
+  return chars.slice(k).join('').replace(/^[\s\p{P}]+/u, '')
+}
+
+export interface CaptionSeg { seg: number; text: string; start: number; end: number; final: boolean }
+
+/**
+ * Captions shown while recording, on the local audio timeline (seconds since recording started).
+ * Each realtime segment spans [end of the previous final, its latest audioEnd]. The segment model's
+ * text commits audio in order up to a boundary (the cut time of the last transcribed segment); a
+ * caption ending before the boundary is hidden, one that straddles it is trimmed (trimCaption), so a
+ * caption never repeats text that is already in the document.
  */
 export class LiveCaptions {
-  finals: { seg: number; text: string; at: number }[] = []
-  partial: { seg: number; text: string } | null = null
+  segs: CaptionSeg[] = []
+  /** Audio (seconds) whose text is committed. */
+  committedUntil = 0
+  /** End of the committed text, for aligning the trim. */
+  committedTail = ''
+  private lastFinalEnd = 0
+  /** A caption ending this close after the boundary counts as covered (VAD end vs. quiet-point cut). */
+  constructor(private margin = 0.25) {}
 
-  setPartial(seg: number, text: string) { this.partial = { seg, text } }
-  addFinal(seg: number, text: string, at: number) {
-    if (this.partial && this.partial.seg <= seg) this.partial = null
-    if (text.trim()) this.finals.push({ seg, text, at })
+  private entry(seg: number): CaptionSeg {
+    let e = this.segs.find((x) => x.seg === seg)
+    if (!e) { e = { seg, text: '', start: this.lastFinalEnd, end: this.lastFinalEnd, final: false }; this.segs.push(e) }
+    return e
   }
-  /** Removes finals that arrived before `t`. */
-  dropUntil(t: number) { this.finals = this.finals.filter((f) => f.at > t) }
-  clear() { this.finals = []; this.partial = null }
+  setPartial(seg: number, text: string, end: number) {
+    const e = this.entry(seg)
+    if (e.final) return
+    e.text = text; e.end = Math.max(e.end, end)
+  }
+  addFinal(seg: number, text: string, end: number) {
+    const e = this.entry(seg)
+    e.text = text; e.end = Math.max(e.end, end); e.final = true
+    this.lastFinalEnd = Math.max(this.lastFinalEnd, e.end)
+    // Drop empty finals and partials of segments that are finished now.
+    this.segs = this.segs.filter((x) => x.text.trim() && (x.final || x.seg > seg))
+    this.prune()
+  }
+  /** Text for audio up to `until` (seconds) is now in the document. */
+  commit(until: number, text: string) {
+    this.committedUntil = Math.max(this.committedUntil, until)
+    if (text) this.committedTail = (this.committedTail + text).slice(-80)
+    this.prune()
+  }
+  private prune() { this.segs = this.segs.filter((x) => !(x.final && x.end <= this.committedUntil + this.margin)) }
+  clear() { this.segs = []; this.committedUntil = 0; this.committedTail = ''; this.lastFinalEnd = 0 }
+
+  private visible(x: CaptionSeg): string {
+    if (x.end <= this.committedUntil + this.margin) return ''
+    return trimCaption(x.text, x.start, x.end, this.committedUntil, this.committedTail)
+  }
   view(join: (a: string, b: string) => string): { done: string; partial: string } {
-    return { done: this.finals.reduce((acc, f) => join(acc, f.text), ''), partial: this.partial?.text ?? '' }
+    const finals = this.segs.filter((x) => x.final).sort((a, b) => a.seg - b.seg)
+    const partial = this.segs.filter((x) => !x.final).sort((a, b) => b.seg - a.seg)[0]
+    return { done: finals.reduce((acc, x) => join(acc, this.visible(x)), ''), partial: partial ? this.visible(partial) : '' }
   }
 }
 
 /**
- * Single-pass mode: segments cut by the recorder while realtime finals are the text. Each is kept
- * until a final arrives well after it was cut (then the final covers it); if live captions drop out,
- * the rest goes to the segmented model. `lagMs` is how late a final may arrive for its audio. Errs on
- * the side of repeating a few words rather than losing any.
+ * Single-pass mode: segments cut by the recorder while realtime finals are the text, keyed by the time
+ * their audio ends. Each is kept until a final whose audio extends `lag` past it arrives (then the final
+ * covers it); if live captions drop out, the rest goes to the segmented model. Errs on the side of
+ * repeating a few words rather than losing any. Any time unit works (the app uses audio seconds).
  */
 export class HeldSegments<T> {
   private items: { value: T; at: number }[] = []
   private lastFinalAt = 0
-  constructor(private lagMs = 2000) {}
+  constructor(private lag = 2) {}
   push(value: T, at: number) { this.items.push({ value, at }) }
   /** A realtime final arrived at `at`. */
-  final(at: number) { this.lastFinalAt = at; this.items = this.items.filter((h) => h.at > at - this.lagMs) }
+  final(at: number) { this.lastFinalAt = at; this.items = this.items.filter((h) => h.at > at - this.lag) }
   /** Segments not covered by a final yet (and forget them). */
-  take(): T[] { const out = this.items.filter((h) => h.at > this.lastFinalAt - this.lagMs).map((h) => h.value); this.items = []; return out }
+  take(): T[] { const out = this.items.filter((h) => h.at > this.lastFinalAt - this.lag).map((h) => h.value); this.items = []; return out }
   get size() { return this.items.length }
 }

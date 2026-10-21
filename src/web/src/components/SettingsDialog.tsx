@@ -11,7 +11,7 @@ interface SettingsView {
   systemPromptIsDefault: boolean
   defaultSystemPrompt: string
   asr: { baseUrl: string; model: string; hasApiKey: boolean; keySource: 'settings' | 'env' | 'none'; segmentSeconds: number; env: { baseUrl: string; model: string; hasApiKey: boolean; segmentSeconds: number }; maxUploadMb: number }
-  realtime: { url: string; twoPass: boolean; hasApiKey: boolean; maxSeconds: number; idleSeconds: number; maxSessions: number; env: { url: string; twoPass: boolean } }
+  realtime: { url: string; twoPass: boolean; hasApiKey: boolean; maxSeconds: number; idleSeconds: number; maxSessions: number; env: { url: string; twoPass: boolean }; segmentConfigured?: boolean; twoPassEffective?: boolean }
 }
 
 export function SettingsDialog({ me, onClose, focus }: { me: Me; onClose: () => void; focus?: 'asr' }) {
@@ -132,8 +132,14 @@ export function SettingsDialog({ me, onClose, focus }: { me: Me; onClose: () => 
             <div className="hint">{t('rtSectionHint')}</div>
             <label>{t('rtUrl')}<input data-testid="rt-url" value={rt.url} onChange={(e) => setRt({ ...rt, url: e.target.value })} placeholder="ws://sensevoice:8040/v1/realtime?intent=transcription" /></label>
             {view.realtime.env.url && <div className="hint">{t('envDefault', { v: view.realtime.env.url })}</div>}
-            <label className="checkbox-row"><input type="checkbox" data-testid="rt-two-pass" checked={rt.twoPass} onChange={(e) => setRt({ ...rt, twoPass: e.target.checked })} /> {t('rtTwoPass')}</label>
-            <div className="hint">{t('rtTwoPassHint')}</div>
+            {(() => {
+              // Two-pass needs the segment model above; without it live captions are the text (single-pass).
+              const segOk = !!view.realtime.segmentConfigured || (!!asr.baseUrl.trim() && !!asr.model.trim())
+              return <>
+                <label className="checkbox-row"><input type="checkbox" data-testid="rt-two-pass" disabled={!segOk} checked={rt.twoPass && segOk} onChange={(e) => setRt({ ...rt, twoPass: e.target.checked })} /> {t('rtTwoPass')}</label>
+                <div className="hint" data-testid="rt-two-pass-hint">{segOk ? t('rtTwoPassHint') : t('rtTwoPassNoSegment')}</div>
+              </>
+            })()}
             <div className="row gap">
               <button className="btn" data-testid="rt-test" onClick={testRt} disabled={rtTesting || !rt.url.trim()}>{rtTesting ? t('testing') : t('testConnection')}</button>
             </div>

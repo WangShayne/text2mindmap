@@ -101,7 +101,7 @@ LLM_BASE_URL=http://host.docker.internal:3001/v1    # 3001 端口上的 New API 
 | `ASR_TIMEOUT_MS` | `120000` | 单次识别请求的超时时间。 |
 | `ASR_MAX_UPLOAD_MB` | `25` | `/api/transcribe` 单次上传上限。 |
 | `ASR_REALTIME_URL` | *（空：关闭实时字幕）* | 实时字幕用的流式识别 WebSocket 地址，如 `ws://sensevoice:8040/v1/realtime?intent=transcription`（填 `http://sensevoice:8040/v1` 也会自动转换）。还需要配置 `ASR_BASE_URL`。见[实时字幕](#实时字幕流式识别)。 |
-| `ASR_REALTIME_TWO_PASS` | `true` | `true`：实时字幕只做预览，文字仍由 `ASR_MODEL` 逐段识别；`false`：实时识别的定稿直接作为文字。 |
+| `ASR_REALTIME_TWO_PASS` | `true` | `true`：实时字幕只做预览，文字仍由 `ASR_MODEL` 逐段识别；`false`：实时识别的定稿直接作为文字。没有配置 `ASR_BASE_URL` / `ASR_MODEL` 时始终是单遍。 |
 | `ASR_REALTIME_API_KEY` | *（空）* | 实时识别服务需要鉴权时才填（sensevoice-server 不需要）。 |
 | `ASR_REALTIME_MAX_SECONDS` | `600` | 单次实时字幕会话最长时长；超过后录音继续，只用分段识别（关闭码 1009）。 |
 | `ASR_REALTIME_IDLE_SECONDS` | `30` | 这么久没有收到音频就关闭会话（1001）。 |
@@ -164,11 +164,13 @@ Markdown 是唯一的数据源。导图始终由 Markdown 生成，在导图上�
 可选。配置流式识别服务后，录音时**边说边出字**（开口后不到 1 秒出第一个字，约每 0.4 秒刷新），不用再等约 8 秒一段。不配置时，录音和以前完全一样。
 
 - **原理**：录音时，浏览器把麦克风音频转成 16 kHz PCM16（每帧 100 ms），通过 WebSocket 发到同源的 `/api/realtime`（用登录 cookie 鉴权）。后端再转发给流式识别服务，所以识别服务不需要暴露到公网；后端把它的事件转换成临时字幕（灰色斜体）和定稿字幕。
-- **两遍识别（默认，`ASR_REALTIME_TWO_PASS=true`）**：同一路音频照常每约 8 秒切一段，发到 `POST /api/transcribe`（你配置的 `ASR_MODEL`，如更准的 Qwen3-ASR-0.6B）。每段结果回来后替换对应位置的字幕。点「停止」后，最后一段识别完终稿就好，实时连接立即关闭。
+- **两遍识别（默认，`ASR_REALTIME_TWO_PASS=true`）**：同一路音频照常每约 8 秒切一段，发到 `POST /api/transcribe`（你配置的 `ASR_MODEL`，如更准的 Qwen3-ASR-0.6B）。每段结果回来后替换对应那段音频的字幕：字幕和分段共用同一条音频时间轴（服务端给每条字幕标上它覆盖到的音频时间），音频已经进入正文的字幕会消失，跨过分段终点的字幕从该处截断（按时间比例定位，再用已提交文字的结尾做模糊匹配校正），实时字幕不会重复正文里已有的内容。点「停止」后，最后一段识别完终稿就好，实时连接立即关闭。
 - **单遍（`false`）**：实时识别的定稿直接作为文字，和分段结果一样追加进去；`/api/transcribe` 只在降级时使用。
+- **只配置了实时字幕、没有分段模型**：只设置 `ASR_REALTIME_URL`（没有 `ASR_BASE_URL` / `ASR_MODEL`）时，录音照常可用，自动走单遍，不报错；设置里的两遍识别开关置灰并附说明。上传音频文件仍需要分段模型。此时实时会话如果提前结束，没有可降级的识别，录音会停止（已识别的文字保留）并提示原因。
 - **降级**：实时会话连不上或中途断开时，录音继续，只用分段识别，并给一个轻提示说明原因：长时间无声（关闭码 **1001**）、连接数已满（**1008**）、超过时长上限（**1009**）、不可用（网络问题、**1006**、上游故障）。单遍模式下，最后一条字幕之后的音频会补发给 `/api/transcribe`，不会丢字（可能重复几个字）。
 - **资源**：会话无论怎么结束（停止、关闭标签页、断网、出错、空闲、超时），后端都会马上关闭到识别服务的连接，释放连接名额。每个用户同时只有 1 个会话（新会话替换旧会话），`ASR_REALTIME_MAX_SESSIONS` 限制所有会话总数；日志只记录时长和关闭码，不记录音频和文字。
 - **识别服务**：`sensevoice-server` 的 `/v1/realtime?intent=transcription`（OpenAI realtime transcription 协议）。保持服务端 VAD 开启（text2mindmap 不发送 `session.update`）。小 CPU 机器上请使用修复了积压和断线问题的版本（有 `--ws-idle-timeout-s`、断线立即释放名额、发送 1001 / 1008 / 1009 关闭帧）；未修复的版本字幕会落后几分钟，关掉的标签页也会一直占着名额。
+- **浏览器**：已在 Chrome 内核上端到端测试（headless Chrome）。Safari 尚未验证。
 - 在 **设置 → 语音识别 → 实时字幕** 里配置（地址、两遍识别开关、「测试连接」），或用 `ASR_REALTIME_URL`。**反向代理必须给 `/api/realtime` 转发 WebSocket 升级**，见[反向代理](#反向代理)。
 - **和 Qwen3-ASR 共用一台 CPU 机器**：两遍模式下录音时两个模型同时运行。6 核机器上 `llama-server` 用 **`-t 2`**（不要 6）：和 SenseVoice 一起跑时，6 线程的 RTF 升到 0.66–1.4，2 线程稳定在 0.36–0.40。这是部署参数，应用不会修改它，示例见 `docker-compose.asr.yml`。
 

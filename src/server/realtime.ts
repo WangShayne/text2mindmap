@@ -277,9 +277,10 @@ export class RealtimeSession {
   private onUpstream(d: RawData) {
     let ev: { type?: unknown }
     try { ev = JSON.parse(d.toString()) } catch { return }
+    const audioEnd = Math.round(this.audioSeconds * 1000) / 1000
     for (const out of this.adapter.handle(ev)) {
       if (out.type === 'ready') { if (this.ready) continue; this.ready = true }
-      this.send(out)
+      this.send(out.type === 'partial' || out.type === 'final' ? { ...out, audioEnd } : out)
     }
     if (this.stopping) this.scheduleFinish()
   }

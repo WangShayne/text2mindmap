@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useI18n } from '../i18n'
-import { appendPiece, fmtClock, useTranscriber, type AsrPublic } from '../audio/useTranscriber'
+import { appendPiece, canRecord, fmtClock, useTranscriber, type AsrPublic } from '../audio/useTranscriber'
 import { AsrOffHint, LangSelect, LiveCaptionsView, VoiceNotice } from './VoiceInput'
 import { Placement, type GenRequest } from './GenerateDialog'
 import type { Selection } from '../mindmap/adapter'
@@ -28,8 +28,9 @@ export function VoicePanel({ source, asr, selection, maxChars, isAdmin, onOpenSe
   const onAppend = useCallback((piece: string, newBlock: boolean) => setText((prev) => appendPiece(prev, piece, newBlock)), [])
   const v = useTranscriber(asr, onAppend)
   const { state, mic } = v
-  const off = !asr.configured
   const isMic = source.kind === 'mic'
+  // The mic also works with live captions alone (single-pass); files need the segment model.
+  const off = isMic ? !canRecord(asr) : !asr.configured
   const micBlocked = isMic && mic !== 'ok'
 
   // Start immediately: this panel only opens from an explicit click on Record / Upload.

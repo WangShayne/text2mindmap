@@ -375,8 +375,9 @@ export function createApp(deps: AppDeps) {
       })(),
       realtime: (() => {
         const r = effectiveRealtime(deps)
+        const a = effectiveAsr(deps)
         return {
-          url: r.url, twoPass: r.twoPass, hasApiKey: !!r.apiKey, maxSeconds: r.maxSeconds, idleSeconds: Math.round(r.idleMs / 1000), maxSessions: r.maxSessions,
+          url: r.url, twoPass: r.twoPass, segmentConfigured: !!a.baseUrl && !!a.model, twoPassEffective: r.twoPass && !!a.baseUrl && !!a.model, hasApiKey: !!r.apiKey, maxSeconds: r.maxSeconds, idleSeconds: Math.round(r.idleMs / 1000), maxSessions: r.maxSessions,
           env: { url: config.asrRealtimeUrl, twoPass: config.asrRealtimeTwoPass },
           overrides: { url: getSetting(db, RK.url) !== undefined, twoPass: getSetting(db, RK.twoPass) !== undefined },
         }
@@ -393,8 +394,8 @@ export function createApp(deps: AppDeps) {
       model: l.model, configured: !!l.baseUrl && !!l.model, maxInputChars: config.maxInputChars, chunkChars: config.llmChunkChars,
       asr: {
         configured: !!a.baseUrl && !!a.model, segmentSeconds: a.segmentSeconds, maxUploadBytes: config.asrMaxBytes,
-        // Live captions need both: the realtime server for captions and the segmented model as fallback.
-        realtime: !!rt.url && !!a.baseUrl && !!a.model, realtimeTwoPass: rt.twoPass,
+        // Without a segment model, live captions still work: single-pass (realtime finals are the text).
+        realtime: !!rt.url, realtimeTwoPass: rt.twoPass && !!a.baseUrl && !!a.model,
       },
     })
   })

@@ -13,8 +13,11 @@ export interface AsrPublic {
   realtimeTwoPass?: boolean
 }
 
-/** How far a realtime final may lag behind the audio it covers (ms); used to line captions up with segments. */
-const CAPTION_LAG_MS = 2000
+/** Single-pass: a held segment counts as covered by a realtime final ending this many seconds after it. */
+const CAPTION_LAG_S = 2
+
+/** Recording works with a segment model, or with live captions alone (single-pass). */
+export const canRecord = (asr: AsrPublic) => asr.configured || !!asr.realtime
 
 export const ASR_LANGS = ['auto', 'zh', 'en', 'yue', 'ja', 'ko'] as const
 export const fmtClock = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(Math.floor(s % 60)).padStart(2, '0')}`
@@ -61,6 +64,7 @@ export function useTranscriber(asr: AsrPublic, onAppend: (text: string, newBlock
   langRef.current = lang
   const rt = useRef<RealtimeClient | null>(null)
   const liveFlush = useRef<(() => void) | null>(null)
+  const stopRef = useRef<(() => Promise<void>) | null>(null)
   const captionsRef = useRef(new LiveCaptions())
   const [captions, setCaptions] = useState({ done: '', partial: '' })
   const [live, setLive] = useState(false)
@@ -123,22 +127,24 @@ export function useTranscriber(asr: AsrPublic, onAppend: (text: string, newBlock
     queue.current = Promise.resolve()
     captionsRef.current.clear(); showCaptions()
     let n = 0
-    const twoPass = asr.realtimeTwoPass !== false
+    // Without a segment model (no ASR Base URL / model) live captions are the only recognizer: single-pass.
+    const segModel = asr.configured
+    const twoPass = asr.realtimeTwoPass !== false && segModel
     // Single-pass only: segments cut while realtime finals are the text, kept until a final covers them
     // so they can still go to the segmented model if live captions drop out.
-    const held = new HeldSegments<{ samples: Float32Array; at: number }>(CAPTION_LAG_MS)
+    const held = new HeldSegments<{ samples: Float32Array; end: number }>(CAPTION_LAG_S)
 
-    const transcribeSegment = (seg: Float32Array, at: number) => {
+    const transcribeSegment = (seg: Float32Array, range: { start: number; end: number }) => {
+      if (!seg.length) { queue.current = queue.current.then(() => { captionsRef.current.commit(range.end, ''); showCaptions() }); return }
       const idx = ++n
       pending.current++
       setState((s) => (s.kind === 'recording' || s.kind === 'finishing' ? { ...s, pending: pending.current } : s))
       queue.current = queue.current.then(async () => {
         if (ac.signal.aborted) return
-        try {
-          append(await transcribeWithRetry(seg, { language: langRef.current, name: `rec-${idx}`, signal: ac.signal }))
-          // This segment's text replaces the live captions for the same stretch of audio.
-          captionsRef.current.dropUntil(at + CAPTION_LAG_MS); showCaptions()
-        } catch (e) { fail(e, idx) }
+        let text = ''
+        try { text = await transcribeWithRetry(seg, { language: langRef.current, name: `rec-${idx}`, signal: ac.signal }); append(text) } catch (e) { fail(e, idx) }
+        // This segment's text replaces the live captions for the same stretch of audio.
+        captionsRef.current.commit(range.end, text); showCaptions()
         pending.current--
         setState((s) => (s.kind === 'recording' || s.kind === 'finishing' ? { ...s, pending: pending.current } : s))
       })
@@ -148,12 +154,12 @@ export function useTranscriber(asr: AsrPublic, onAppend: (text: string, newBlock
     if (asr.realtime && typeof WebSocket !== 'undefined') {
       client = new RealtimeClient(realtimeUrl(), {
         onReady: () => setLive(true),
-        onPartial: (seg, text) => { captionsRef.current.setPartial(seg, text); showCaptions() },
-        onFinal: (seg, text) => {
-          const at = Date.now()
-          if (twoPass) { captionsRef.current.addFinal(seg, text, at); showCaptions(); return }
-          captionsRef.current.addFinal(seg, '', at); showCaptions()
-          held.final(at)
+        onPartial: (seg, text, end) => { captionsRef.current.setPartial(seg, text, end); showCaptions() },
+        onFinal: (seg, text, end) => {
+          if (twoPass) { captionsRef.current.addFinal(seg, text, end); showCaptions(); return }
+          // Single-pass: the final is the text; the caption only shows the next partial.
+          captionsRef.current.addFinal(seg, '', end); captionsRef.current.commit(end, text); showCaptions()
+          held.final(end)
           queue.current = queue.current.then(() => append(text))
         },
         onDegrade: (reason: DegradeReason) => {
@@ -161,19 +167,25 @@ export function useTranscriber(asr: AsrPublic, onAppend: (text: string, newBlock
           setLive(false)
           captionsRef.current.clear(); showCaptions()
           if (ac.signal.aborted) return
+          if (!segModel) {
+            // Nothing to fall back to: end the recording, keep the text so far.
+            setNotice(t(`rtNoFallback_${reason}` as never))
+            void stopRef.current?.()
+            return
+          }
           setNotice(t(`rtDegrade_${reason}` as never))
           // Audio not covered by a realtime final goes to the segmented model (may repeat a few words).
-          if (!twoPass) for (const h of held.take()) transcribeSegment(h.samples, h.at)
+          if (!twoPass) for (const h of held.take()) transcribeSegment(h.samples, { start: 0, end: h.end })
         },
       })
       rt.current = client
       client.connect()
     }
     const framer = new PcmFramer(3200, (f) => rt.current?.sendPcm(f))
-    const r = new MicRecorder(Math.min(8, asr.segmentSeconds), (seg) => {
-      const at = Date.now()
-      if (!twoPass && rt.current) { held.push({ samples: seg, at }, at); return }
-      transcribeSegment(seg, at)
+    const r = new MicRecorder(Math.min(8, asr.segmentSeconds), (seg, range) => {
+      if (!segModel) return
+      if (!twoPass && rt.current) { if (seg.length) held.push({ samples: seg, end: range.end }, range.end); return }
+      transcribeSegment(seg, range)
     }, (rms) => setLevel(Math.min(1, rms * 6)), client ? (x) => { if (rt.current) framer.push(floatToPcm16(x)) } : undefined)
     rec.current = r
     liveFlush.current = () => framer.flush()
@@ -196,7 +208,7 @@ export function useTranscriber(asr: AsrPublic, onAppend: (text: string, newBlock
     await r?.stop()
     const client = rt.current
     if (client) {
-      if (asr.realtimeTwoPass !== false) client.close() // the segmented model has the final text
+      if (asr.realtimeTwoPass !== false && asr.configured) client.close() // the segmented model has the final text
       else { liveFlush.current?.(); await client.stop() } // its last final is the end of the text
     }
     rt.current = null
@@ -206,7 +218,8 @@ export function useTranscriber(asr: AsrPublic, onAppend: (text: string, newBlock
     abort.current = null
     setState({ kind: 'idle' })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [asr.realtimeTwoPass])
+  }, [asr.realtimeTwoPass, asr.configured])
+  stopRef.current = stopRec
   const cancel = () => { abort.current?.abort(); rt.current?.close(); rt.current = null; if (rec.current) void stopRec() }
 
   return { state, busy, error, info, level, now, lang, setLang, mic, startRec, stopRec, transcribeFile, cancel, captions, live, notice, dismissNotice: () => setNotice('') }

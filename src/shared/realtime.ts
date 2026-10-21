@@ -6,6 +6,9 @@
 // Server -> browser: {"type":"ready"} | {"type":"partial","seg":n,"text":"…"} (whole current hypothesis
 //                    of segment n, replaces the previous one) | {"type":"final","seg":n,"text":"…"} |
 //                    {"type":"error","code":"…","message":"…"} | {"type":"done"} | {"type":"pong"}.
+//                    partial / final carry audioEnd: seconds of audio the server had received from the
+//                    browser when the event arrived (an upper bound of the audio the text covers), so the
+//                    browser can line captions up with its own audio timeline.
 
 export const REALTIME_PATH = '/api/realtime'
 export const REALTIME_SAMPLE_RATE = 16_000
@@ -16,8 +19,8 @@ export const REALTIME_MAX_FRAME_BYTES = 64 * 1024
 
 export type RealtimeServerEvent =
   | { type: 'ready' }
-  | { type: 'partial'; seg: number; text: string }
-  | { type: 'final'; seg: number; text: string }
+  | { type: 'partial'; seg: number; text: string; audioEnd?: number }
+  | { type: 'final'; seg: number; text: string; audioEnd?: number }
   | { type: 'error'; code: RealtimeErrorCode; message?: string }
   | { type: 'done' }
   | { type: 'pong' }

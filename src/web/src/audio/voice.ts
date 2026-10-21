@@ -67,7 +67,14 @@ export class MicRecorder {
    * @param onLive receives the same audio as a continuous 16 kHz stream (for live captions), in
    * chunks as they arrive from the microphone.
    */
-  constructor(private segmentSeconds: number, private onSegment: (samples16k: Float32Array) => void, private onLevel?: (rms: number) => void, private onLive?: (samples16k: Float32Array) => void) {}
+  /** Input samples already handed out as segments (for the segment time ranges). */
+  private consumed = 0
+
+  /**
+   * @param onSegment gets each segment and its time range (seconds since recording started). A silent
+   * stretch is reported with empty samples, so the ranges stay contiguous.
+   */
+  constructor(private segmentSeconds: number, private onSegment: (samples16k: Float32Array, range: { start: number; end: number }) => void, private onLevel?: (rms: number) => void, private onLive?: (samples16k: Float32Array) => void) {}
 
   async start() {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
@@ -102,10 +109,13 @@ export class MicRecorder {
     this.chunks = rest.length ? [rest.slice()] : []
     this.length = rest.length
     const seg = all.subarray(0, end)
+    const range = { start: this.consumed / this.rate, end: (this.consumed + end) / this.rate }
+    this.consumed += end
     // Skip segments that are (almost) silent: nothing to transcribe.
     let peak = 0
     for (let i = 0; i < seg.length; i += 8) peak = Math.max(peak, Math.abs(seg[i]))
-    if (seg.length > this.rate * 0.3 && peak > 0.01) this.onSegment(resample(seg, this.rate, ASR_SAMPLE_RATE))
+    if (seg.length > this.rate * 0.3 && peak > 0.01) this.onSegment(resample(seg, this.rate, ASR_SAMPLE_RATE), range)
+    else this.onSegment(new Float32Array(0), range)
   }
 
   async stop() {

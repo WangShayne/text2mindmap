@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { useI18n } from '../i18n'
-import { ASR_LANGS, fmtClock, useTranscriber, type AsrPublic } from '../audio/useTranscriber'
+import { ASR_LANGS, canRecord, fmtClock, useTranscriber, type AsrPublic } from '../audio/useTranscriber'
 
 export type { AsrPublic } from '../audio/useTranscriber'
 
@@ -67,7 +67,9 @@ export function VoiceInput({ asr, onAppend, onBusy, isAdmin = false, onOpenSetti
   const fileRef = useRef<HTMLInputElement>(null)
   useEffect(() => { onBusy?.(v.busy) }, [v.busy, onBusy])
 
-  const off = !asr.configured
+  // Recording also works with live captions alone; uploading needs the segment model.
+  const off = !canRecord(asr)
+  const noUpload = !asr.configured
   const recTitle = off ? t('asrConfigureFirst') : mic === 'insecure' ? t('asrNeedHttps') : mic === 'unsupported' ? t('asrNoMicApi') : t('asrRecordHint')
 
   return (
@@ -99,8 +101,8 @@ export function VoiceInput({ asr, onAppend, onBusy, isAdmin = false, onOpenSetti
             <span className="tip-wrap" title={recTitle}>
               <button className="btn" data-testid="rec-start" disabled={off || mic !== 'ok'} title={recTitle} aria-label={`${t('asrRecord')}: ${recTitle}`} onClick={v.startRec}>🎙 {t('asrRecord')}</button>
             </span>
-            <span className="tip-wrap" title={off ? t('asrConfigureFirst') : t('asrUploadHint')}>
-              <button className="btn" data-testid="audio-upload" disabled={off} title={off ? t('asrConfigureFirst') : t('asrUploadHint')} onClick={() => fileRef.current?.click()}>⇪ {t('asrUpload')}</button>
+            <span className="tip-wrap" title={noUpload ? t('asrConfigureFirst') : t('asrUploadHint')}>
+              <button className="btn" data-testid="audio-upload" disabled={noUpload} title={noUpload ? t('asrConfigureFirst') : t('asrUploadHint')} onClick={() => fileRef.current?.click()}>⇪ {t('asrUpload')}</button>
             </span>
             <LangSelect value={v.lang} onChange={v.setLang} disabled={off} />
             {off

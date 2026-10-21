@@ -6,6 +6,7 @@ import { GenerateDialog, type GenRequest } from './GenerateDialog'
 import { Menu } from './Menu'
 import { MapStylePicker } from './MapStylePicker'
 import { VoicePanel, type VoiceSource } from './VoicePanel'
+import { canRecord } from '../audio/useTranscriber'
 import { classifyFile, isTrivialMarkdown, appendOutlineUnder, titleFromFileName, UPLOAD_ACCEPT } from '../lib/entry'
 import { createSimpleMindMap, SMM_EXPORT_FORMATS } from '../mindmap/simpleMindMapAdapter'
 import type { ExportFormat, MapCommand, MindMapAdapter, Selection } from '../mindmap/adapter'
@@ -293,7 +294,7 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onImportDoc, 
             : (
               <div className="entry-group" role="group" aria-label={t('generate')}>
                 <button className="btn entry" data-testid="entry-text" title={t('entryTextTip')} aria-label={t('entryTextTip')} onClick={() => openText()}><span className="ico">✍️</span><span className="lbl">{t('entryText')}</span></button>
-                <button className={`btn entry${voice?.source.kind === 'mic' ? ' active' : ''}`} data-testid="entry-record" title={asr.configured ? t('entryRecordTip') : t('asrConfigureFirst')} aria-label={t('entryRecordTip')} onClick={startRecord}><span className="ico">🎙</span><span className="lbl">{t('entryRecord')}</span></button>
+                <button className={`btn entry${voice?.source.kind === 'mic' ? ' active' : ''}`} data-testid="entry-record" title={canRecord(asr) ? t('entryRecordTip') : t('asrConfigureFirst')} aria-label={t('entryRecordTip')} onClick={startRecord}><span className="ico">🎙</span><span className="lbl">{t('entryRecord')}</span></button>
                 <button className="btn entry" data-testid="entry-upload" title={t('entryUploadTip')} aria-label={t('entryUploadTip')} onClick={pickUpload}><span className="ico">📁</span><span className="lbl">{t('entryUpload')}</span></button>
               </div>
             )}
@@ -345,8 +346,8 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onImportDoc, 
                 <button className="entry-card" data-testid="card-text" onClick={() => openText()}>
                   <span className="card-ico">✍️</span><span className="card-title">{t('cardPaste')}</span><span className="card-sub">{t('cardPasteSub')}</span>
                 </button>
-                <button className={`entry-card${asr.configured ? '' : ' off'}`} data-testid="card-record" onClick={startRecord}>
-                  <span className="card-ico">🎙</span><span className="card-title">{t('cardRecord')}</span><span className="card-sub">{asr.configured ? t('cardRecordSub') : t('cardRecordOff')}</span>
+                <button className={`entry-card${canRecord(asr) ? '' : ' off'}`} data-testid="card-record" onClick={startRecord}>
+                  <span className="card-ico">🎙</span><span className="card-title">{t('cardRecord')}</span><span className="card-sub">{canRecord(asr) ? t('cardRecordSub') : t('cardRecordOff')}</span>
                 </button>
                 <button className="entry-card" data-testid="card-upload" onClick={pickUpload}>
                   <span className="card-ico">📁</span><span className="card-title">{t('cardUpload')}</span><span className="card-sub">{t('cardUploadSub')}</span>
