@@ -1,6 +1,6 @@
 {
   "name": "text2mindmap",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Turn text into an editable mind map with any OpenAI-compatible LLM. Self-hosted, Docker.",
   "scripts": {
     "dev": "node --watch --disable-warning=ExperimentalWarning --import tsx src/server/index.ts",
