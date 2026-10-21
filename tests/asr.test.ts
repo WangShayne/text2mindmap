@@ -213,4 +213,20 @@ describe('transcript parsing', () => {
     expect(parseTranscription('not json', 'application/json')).toBeUndefined()
     expect(cleanTranscript('<|en|><|EMO_UNKNOWN|><|Speech|><|woitn|>hi there')).toBe('hi there')
   })
+
+  it('strips Qwen3-ASR language prefixes from llama-server output', () => {
+    expect(cleanTranscript('language Chinese<asr_text>那我专业是计算机。')).toBe('那我专业是计算机。')
+    expect(cleanTranscript('language English<asr_text>My parents said yes.')).toBe('My parents said yes.')
+    expect(cleanTranscript('  language Cantonese<asr_text>你好</asr_text>\n')).toBe('你好')
+    expect(cleanTranscript('language None<asr_text>')).toBe('')
+    expect(cleanTranscript('language Chinese<asr_text>第一段。language English<asr_text>second part.')).toBe('第一段。second part.')
+    expect(parseTranscription('{"text":"language Chinese<asr_text>我申请了 university。"}', 'application/json')).toBe('我申请了 university。')
+    expect(parseTranscription('language Japanese<asr_text>こんにちは', 'text/plain')).toBe('こんにちは')
+  })
+
+  it('leaves ordinary text that mentions languages alone', () => {
+    for (const t of ['language English is hard to learn', 'My first language Chinese, second English.', '编程 language 很多种', 'Use <b>bold</b> and a < b', 'language: Chinese']) {
+      expect(cleanTranscript(t)).toBe(t)
+    }
+  })
 })

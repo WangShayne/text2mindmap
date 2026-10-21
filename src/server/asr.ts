@@ -7,9 +7,20 @@ export interface AsrConfig { baseUrl: string; apiKey: string; model: string; tim
 export type AsrErrorCode = 'not_configured' | 'auth' | 'not_found' | 'too_large' | 'unsupported' | 'rate_limit' | 'timeout' | 'network' | 'bad_response' | 'upstream' | 'aborted'
 export type AsrResult = { ok: true; text: string } | { ok: false; code: AsrErrorCode; message: string; status?: number }
 
-/** Removes SenseVoice-style control tags such as <|zh|><|NEUTRAL|><|Speech|><|withitn|>. */
+/**
+ * Removes model control markup from a transcript:
+ * - SenseVoice tags such as <|zh|><|NEUTRAL|><|Speech|><|withitn|>;
+ * - Qwen3-ASR's "language Chinese<asr_text>" prefix (llama.cpp llama-server returns it verbatim;
+ *   "language None<asr_text>" means no speech), plus any stray <asr_text> / </asr_text> tag.
+ * Requires the literal <asr_text> tag, so ordinary text such as "language English is hard" is kept.
+ */
 export function cleanTranscript(s: string): string {
-  return s.replace(/<\|[^|<>]{0,40}\|>/g, '').replace(/[ \t]+\n/g, '\n').trim()
+  return s
+    .replace(/<\|[^|<>]{0,40}\|>/g, '')
+    .replace(/language[ \t]+[A-Za-z][A-Za-z _-]{0,30}?[ \t]*<asr_text>/g, '')
+    .replace(/<\/?asr_text>/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .trim()
 }
 
 /** Pulls the transcript out of a json / verbose_json / text response. Undefined when the shape is unknown. */

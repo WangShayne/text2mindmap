@@ -1,7 +1,13 @@
 // Pure helpers for bench.mjs (unit-tested in tests/asr-bench.test.ts).
 
 // Same cleanup as src/server/asr.ts
-export const cleanTranscript = (s) => s.replace(/<\|[^|<>]{0,40}\|>/g, '').replace(/[ \t]+\n/g, '\n').trim()
+// Keep in sync with cleanTranscript in src/server/asr.ts (SenseVoice <|..|> tags, Qwen3-ASR "language X<asr_text>" prefix).
+export const cleanTranscript = (s) => s
+  .replace(/<\|[^|<>]{0,40}\|>/g, '')
+  .replace(/language[ \t]+[A-Za-z][A-Za-z _-]{0,30}?[ \t]*<asr_text>/g, '')
+  .replace(/<\/?asr_text>/g, '')
+  .replace(/[ \t]+\n/g, '\n')
+  .trim()
 
 /** Character error rate on normalized text: punctuation and spaces removed, lower case, full-width folded. */
 export function normalizeForCer(s) {

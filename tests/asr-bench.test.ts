@@ -17,6 +17,8 @@ describe('asr-bench', () => {
 
   it('strips SenseVoice tags like the server does', () => {
     expect(cleanTranscript('<|zh|><|NEUTRAL|><|Speech|><|withitn|>你好。')).toBe('你好。')
+    expect(cleanTranscript('language Chinese<asr_text>你好。')).toBe('你好。')
+    expect(cleanTranscript('language English is hard')).toBe('language English is hard')
   })
 
   it('computes CER on normalized text with S/D/I counts', () => {
