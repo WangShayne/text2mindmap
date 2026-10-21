@@ -69,4 +69,11 @@ describe('misc', () => {
     expect(appendPiece('第一段', '第二段', true)).toBe('第一段\n\n第二段')
     expect(appendPiece('Hello', 'world', false)).toBe('Hello world')
   })
+  it('appendPiece skips empty segments without stray spaces or blank lines', () => {
+    expect(appendPiece('第一段', '', true)).toBe('第一段')
+    expect(appendPiece('第一段', '  \n', false)).toBe('第一段')
+    expect(appendPiece('Hello', '', false)).toBe('Hello')
+    expect(appendPiece('', '', true)).toBe('')
+    expect(appendPiece(appendPiece('Hello', '', false), 'world', false)).toBe('Hello world')
+  })
 })

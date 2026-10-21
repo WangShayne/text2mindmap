@@ -19,6 +19,9 @@ describe('asr-bench', () => {
     expect(cleanTranscript('<|zh|><|NEUTRAL|><|Speech|><|withitn|>你好。')).toBe('你好。')
     expect(cleanTranscript('language Chinese<asr_text>你好。')).toBe('你好。')
     expect(cleanTranscript('language English is hard')).toBe('language English is hard')
+    expect(cleanTranscript('language Chinese<asr_text>Transcribe audio to text (language: zh).')).toBe('')
+    expect(cleanTranscript('language Chinese<asr_text>嗯。')).toBe('')
+    expect(cleanTranscript('language Chinese<asr_text>嗯，我觉得可以。')).toBe('嗯，我觉得可以。')
   })
 
   it('computes CER on normalized text with S/D/I counts', () => {

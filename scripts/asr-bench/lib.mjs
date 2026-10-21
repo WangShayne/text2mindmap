@@ -1,13 +1,19 @@
 // Pure helpers for bench.mjs (unit-tested in tests/asr-bench.test.ts).
 
 // Same cleanup as src/server/asr.ts
-// Keep in sync with cleanTranscript in src/server/asr.ts (SenseVoice <|..|> tags, Qwen3-ASR "language X<asr_text>" prefix).
-export const cleanTranscript = (s) => s
-  .replace(/<\|[^|<>]{0,40}\|>/g, '')
-  .replace(/language[ \t]+[A-Za-z][A-Za-z _-]{0,30}?[ \t]*<asr_text>/g, '')
-  .replace(/<\/?asr_text>/g, '')
-  .replace(/[ \t]+\n/g, '\n')
-  .trim()
+// Keep in sync with cleanTranscript in src/server/asr.ts (SenseVoice <|..|> tags, Qwen3-ASR "language X<asr_text>" prefix,
+// llama-server prompt echo and filler-only segments become empty).
+const PROMPT_ECHO = /^Transcribe audio to text( \(language: [^)]*\))?\.?$/i
+const FILLER_ONLY = /^[\s\p{P}]*(?:(?:嗯|呃|额|啊|唔|um+|uh+|uhm|hmm+|erm|er|ah)[\s\p{P}]*){1,3}$/iu
+export const cleanTranscript = (s) => {
+  const t = s
+    .replace(/<\|[^|<>]{0,40}\|>/g, '')
+    .replace(/language[ \t]+[A-Za-z][A-Za-z _-]{0,30}?[ \t]*<asr_text>/g, '')
+    .replace(/<\/?asr_text>/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .trim()
+  return PROMPT_ECHO.test(t) || FILLER_ONLY.test(t) ? '' : t
+}
 
 /** Character error rate on normalized text: punctuation and spaces removed, lower case, full-width folded. */
 export function normalizeForCer(s) {

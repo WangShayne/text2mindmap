@@ -224,6 +224,26 @@ describe('transcript parsing', () => {
     expect(parseTranscription('language Japanese<asr_text>こんにちは', 'text/plain')).toBe('こんにちは')
   })
 
+  it('drops llama-server prompt echoes and filler-only segments (raw output from green, server-b11749)', () => {
+    // 1 s of silence with language=zh: the prompt is echoed back.
+    expect(cleanTranscript('language Chinese<asr_text>Transcribe audio to text (language: zh).')).toBe('')
+    expect(parseTranscription('{"text":"language Chinese<asr_text>Transcribe audio to text (language: zh)."}', 'application/json')).toBe('')
+    expect(cleanTranscript('language Chinese<asr_text>Transcribe audio to text')).toBe('')
+    expect(cleanTranscript('transcribe audio to text (language: en)')).toBe('')
+    // 1 s of silence without language: a lone filler.
+    expect(cleanTranscript('language Chinese<asr_text>嗯。')).toBe('')
+    for (const t of ['呃', '啊！', 'um', 'Uh...', '嗯，嗯。', ' hmm? ']) expect(cleanTranscript(t)).toBe('')
+  })
+
+  it('keeps fillers and the prompt words inside normal text', () => {
+    expect(cleanTranscript('language Chinese<asr_text>嗯，我觉得可以。')).toBe('嗯，我觉得可以。')
+    expect(cleanTranscript('um, so I think yes')).toBe('um, so I think yes')
+    expect(cleanTranscript('啊对')).toBe('啊对')
+    expect(cleanTranscript('Transcribe audio to text quickly, please.')).toBe('Transcribe audio to text quickly, please.')
+    expect(cleanTranscript('Please transcribe audio to text.')).toBe('Please transcribe audio to text.')
+    expect(cleanTranscript('Ahead')).toBe('Ahead')
+  })
+
   it('leaves ordinary text that mentions languages alone', () => {
     for (const t of ['language English is hard to learn', 'My first language Chinese, second English.', '编程 language 很多种', 'Use <b>bold</b> and a < b', 'language: Chinese']) {
       expect(cleanTranscript(t)).toBe(t)

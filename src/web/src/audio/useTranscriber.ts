@@ -17,7 +17,8 @@ export type VoiceState =
 
 /** Appends one transcript piece to a text, starting a new paragraph for a new recording or file. */
 export const appendPiece = (prev: string, piece: string, newBlock: boolean) =>
-  newBlock && prev.trim() ? `${prev.replace(/\s+$/, '')}\n\n${piece.trim()}` : joinTranscript(prev, piece)
+  !piece.trim() ? prev
+    : newBlock && prev.trim() ? `${prev.replace(/\s+$/, '')}\n\n${piece.trim()}` : joinTranscript(prev, piece)
 
 /**
  * Microphone recording and audio-file transcription, shared by the record panel and the
