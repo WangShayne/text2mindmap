@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 # ---- build: frontend (Vite) + server bundle (esbuild) ----
-FROM node:22-alpine AS build
+# The output is plain JavaScript, so this stage always runs on the build machine's own platform
+# (no emulation when building the arm64 image on an amd64 runner).
+FROM --platform=$BUILDPLATFORM node:22-alpine AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
@@ -9,6 +11,11 @@ RUN npm run build
 
 # ---- runtime: Node only, no node_modules (the server is a single bundled file) ----
 FROM node:22-alpine
+LABEL org.opencontainers.image.title="text2mindmap" \
+      org.opencontainers.image.description="Turn text into an editable mind map with any OpenAI-compatible LLM. Self-hosted." \
+      org.opencontainers.image.source="https://github.com/WangShayne/text2mindmap" \
+      org.opencontainers.image.url="https://github.com/WangShayne/text2mindmap" \
+      org.opencontainers.image.licenses="MIT"
 RUN apk add --no-cache su-exec tini \
  && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn* /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/yarn* /usr/local/bin/corepack
 WORKDIR /app

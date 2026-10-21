@@ -21,7 +21,31 @@
 - **单管理员账号**：首次启动时创建，不开放注册。数据都在一个 SQLite 文件里。
 - 界面支持中文和英文。
 
-## 快速开始（Docker Compose）
+## 快速开始（预构建镜像）
+
+每次发布版本都会自动构建多架构镜像（`linux/amd64`、`linux/arm64`），推送到 GitHub Container Registry：`ghcr.io/wangshayne/text2mindmap`，标签有 `latest`、`x.y` 和 `x.y.z`。
+
+一行命令启动（数据和 SQLite 数据库保存在 `./data`）：
+
+```bash
+docker run -d --name text2mindmap --restart unless-stopped -p 127.0.0.1:3000:3000 -v "$PWD/data:/data" -e APP_SECRET="$(openssl rand -hex 32)" ghcr.io/wangshayne/text2mindmap:latest
+```
+
+请记下 `APP_SECRET` 的值（用来加密「设置」里保存的 API Key），以后重建容器时要传同一个值，也可以写进 env 文件用 `--env-file .env` 传入。模型和语音识别可以登录后在「设置」里填，也可以用环境变量传（见[配置项](#配置项)）。初始化码用 `docker logs text2mindmap` 查看。
+
+用 Docker Compose：
+
+```bash
+mkdir text2mindmap && cd text2mindmap
+curl -fsSLO https://raw.githubusercontent.com/WangShayne/text2mindmap/main/docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/WangShayne/text2mindmap/main/.env.example -o .env   # 填 APP_SECRET、LLM_*（模型也可以之后在「设置」里填）
+docker pull ghcr.io/wangshayne/text2mindmap:latest
+docker compose up -d
+```
+
+升级：`docker compose pull && docker compose up -d`。要固定版本，在 `.env` 里设置 `TEXT2MINDMAP_IMAGE=ghcr.io/wangshayne/text2mindmap:0.3.0`。
+
+### 从源码构建（备选）
 
 ```bash
 git clone https://github.com/WangShayne/text2mindmap.git
@@ -29,6 +53,8 @@ cd text2mindmap
 cp .env.example .env        # 填 LLM_BASE_URL、LLM_API_KEY、LLM_MODEL（也可以之后在「设置」里填）
 docker compose up -d --build
 ```
+
+### 首次登录
 
 打开 <http://127.0.0.1:3000> 创建管理员账号。初始化页面需要填写一个**一次性初始化码**，只有服务器管理员能在日志里看到：
 
@@ -40,7 +66,7 @@ docker compose logs text2mindmap | grep "SETUP CODE"   # 或者：cat data/setup
 
 默认只绑定 `127.0.0.1`。对外提供服务时，请在前面加一层带 HTTPS 的反向代理（见[反向代理](#反向代理)），或者设置 `BIND_ADDRESS=0.0.0.0` 直接暴露端口。
 
-镜像由 `Dockerfile` 在本地构建（多阶段构建，运行镜像里只有 Node 和打包好的程序，约 170 MB），目前没有发布预构建镜像。
+镜像由 `Dockerfile` 构建（多阶段构建，运行镜像里只有 Node 和打包好的程序，约 170 MB）。推送 `v*` 标签时，`.github/workflows/docker-publish.yml` 会自动构建并推送发布镜像。
 
 ### 调用宿主机上的模型
 

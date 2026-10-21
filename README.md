@@ -21,7 +21,31 @@ Paste an article, notes or a transcript, and the LLM writes a Markdown outline t
 - **Single admin account** created on first start. No public sign-up. Data lives in one SQLite file.
 - UI in English and Chinese.
 
-## Quick start (Docker Compose)
+## Quick start (prebuilt image)
+
+Multi-arch images (`linux/amd64`, `linux/arm64`) are published to GitHub Container Registry for every release: `ghcr.io/wangshayne/text2mindmap` with the tags `latest`, `x.y` and `x.y.z`.
+
+One-liner (data and the SQLite database go to `./data`):
+
+```bash
+docker run -d --name text2mindmap --restart unless-stopped -p 127.0.0.1:3000:3000 -v "$PWD/data:/data" -e APP_SECRET="$(openssl rand -hex 32)" ghcr.io/wangshayne/text2mindmap:latest
+```
+
+Keep the `APP_SECRET` value (it encrypts the API keys saved in Settings); pass the same value on every restart, or put it in an env file with `--env-file .env`. LLM and ASR settings can be entered in **Settings** after login, or passed as env vars (see [Configuration](#configuration)). The setup code is in `docker logs text2mindmap`.
+
+With Docker Compose:
+
+```bash
+mkdir text2mindmap && cd text2mindmap
+curl -fsSLO https://raw.githubusercontent.com/WangShayne/text2mindmap/main/docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/WangShayne/text2mindmap/main/.env.example -o .env   # set APP_SECRET, LLM_* (or set LLM later in Settings)
+docker pull ghcr.io/wangshayne/text2mindmap:latest
+docker compose up -d
+```
+
+Update: `docker compose pull && docker compose up -d`. Pin a version with `TEXT2MINDMAP_IMAGE=ghcr.io/wangshayne/text2mindmap:0.3.0` in `.env`.
+
+### Build from source (alternative)
 
 ```bash
 git clone https://github.com/WangShayne/text2mindmap.git
@@ -29,6 +53,8 @@ cd text2mindmap
 cp .env.example .env        # set LLM_BASE_URL, LLM_API_KEY, LLM_MODEL (or set them later in Settings)
 docker compose up -d --build
 ```
+
+### First login
 
 Open <http://127.0.0.1:3000> and create the admin account. The setup page asks for a **one-time setup code** that only the server operator can see:
 
@@ -40,7 +66,7 @@ A new code is generated on every restart until setup is done, and it stops worki
 
 By default the port is bound to `127.0.0.1` only. Put a reverse proxy with HTTPS in front of it (see [Reverse proxy](#reverse-proxy)), or set `BIND_ADDRESS=0.0.0.0` to expose it directly.
 
-The image is built locally from the `Dockerfile` (multi-stage; the runtime image only contains Node and the bundled app, about 170 MB). There is no prebuilt image yet.
+The image is built from the `Dockerfile` (multi-stage; the runtime image only contains Node and the bundled app, about 170 MB). Release images are built and pushed by `.github/workflows/docker-publish.yml` when a `v*` tag is pushed.
 
 ### Calling an LLM on the Docker host
 
