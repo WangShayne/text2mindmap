@@ -7,6 +7,7 @@ import { SettingsDialog } from './components/SettingsDialog'
 import { AboutDialog } from './components/AboutDialog'
 import { Menu } from './components/Menu'
 import { APP_NAME } from '../../shared/brand'
+import { DEFAULT_MAP_STYLE, normalizeMapStyle, type MapStyle } from '../../shared/mapStyle'
 
 type Boot = { state: 'loading' } | { state: 'setup' } | { state: 'login' } | { state: 'app'; me: Me }
 
@@ -20,6 +21,7 @@ export function App() {
   const [pub, setPub] = useState<{ chunkChars: number; maxInputChars: number; configured: boolean; asr?: { configured: boolean; segmentSeconds: number } }>({ chunkChars: 12000, maxInputChars: 200000, configured: true })
   const fileInput = useRef<HTMLInputElement>(null)
   const [navOpen, setNavOpen] = useState(false)
+  const [mapStyle, setMapStyle] = useState<MapStyle>(DEFAULT_MAP_STYLE)
 
   useEffect(() => {
     ;(async () => {
@@ -56,6 +58,7 @@ export function App() {
   useEffect(() => {
     if (boot.state !== 'app') return
     api('GET', '/api/settings/public').then(setPub).catch(() => {})
+    api<{ prefs: { mapTheme: string; mapLayout: string } }>('GET', '/api/prefs').then((r) => setMapStyle(normalizeMapStyle({ theme: r.prefs.mapTheme, layout: r.prefs.mapLayout }))).catch(() => {})
     loadDocs().then((list) => {
       const last = localStorage.getItem('t2m.lastDoc')
       const pick = list.find((d) => d.id === last) ?? list[0]
@@ -85,6 +88,10 @@ export function App() {
     const text = await f.text()
     await createDoc(f.name.replace(/\.(md|markdown|txt)$/i, '') || t('untitled'), text)
   }
+  const changeMapStyle = useCallback((s: MapStyle) => {
+    setMapStyle(s)
+    api('PUT', '/api/prefs', { mapTheme: s.theme, mapLayout: s.layout }).catch((e) => window.alert(t('mapStyleSaveFailed', { msg: (e as Error).message })))
+  }, [t])
   const logout = async () => { await api('POST', '/api/auth/logout').catch(() => {}); setDoc(null); setDocs([]); setBoot({ state: 'login' }) }
 
   if (boot.state === 'loading') return <div className="center muted">…</div>
@@ -130,7 +137,7 @@ export function App() {
         </div>
       </aside>
       <main className="main">
-        <Suspense fallback={<div className="center muted">…</div>}>{doc ? <Workspace key={doc.id} doc={doc} onMetaChange={onMetaChange} settings={pub} onImport={() => fileInput.current?.click()} onImportDoc={async (title, md) => { await createDoc(title, md) }} onAbout={() => setDialog('about')} onToggleNav={() => setNavOpen((v) => !v)} isAdmin={boot.me.isAdmin} onOpenSettings={(section) => { setSettingsFocus(section); setDialog('settings') }} /> : <div className="center muted">…</div>}</Suspense>
+        <Suspense fallback={<div className="center muted">…</div>}>{doc ? <Workspace key={doc.id} doc={doc} onMetaChange={onMetaChange} settings={pub} onImport={() => fileInput.current?.click()} onImportDoc={async (title, md) => { await createDoc(title, md) }} onAbout={() => setDialog('about')} onToggleNav={() => setNavOpen((v) => !v)} isAdmin={boot.me.isAdmin} onOpenSettings={(section) => { setSettingsFocus(section); setDialog('settings') }} mapStyle={mapStyle} onMapStyleChange={changeMapStyle} /> : <div className="center muted">…</div>}</Suspense>
       </main>
       {dialog === 'settings' && <SettingsDialog me={boot.me} focus={settingsFocus} onClose={() => { setDialog(null); setSettingsFocus(undefined); api('GET', '/api/settings/public').then(setPub).catch(() => {}) }} />}
       {dialog === 'about' && <AboutDialog onClose={() => setDialog(null)} />}

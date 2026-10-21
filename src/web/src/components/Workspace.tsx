@@ -4,11 +4,13 @@ import { useI18n } from '../i18n'
 import { MarkdownEditor, type EditorHandle } from './MarkdownEditor'
 import { GenerateDialog, type GenRequest } from './GenerateDialog'
 import { Menu } from './Menu'
+import { MapStylePicker } from './MapStylePicker'
 import { VoicePanel, type VoiceSource } from './VoicePanel'
 import { classifyFile, isTrivialMarkdown, appendOutlineUnder, titleFromFileName, UPLOAD_ACCEPT } from '../lib/entry'
-import { createSimpleMindMap } from '../mindmap/simpleMindMapAdapter'
+import { createSimpleMindMap, SMM_EXPORT_FORMATS } from '../mindmap/simpleMindMapAdapter'
 import type { ExportFormat, MapCommand, MindMapAdapter, Selection } from '../mindmap/adapter'
 import { parseMarkdown, serializeOutline, type OutlineNode } from '../../../shared/outline'
+import { DEFAULT_MAP_STYLE, THEME_SWATCH, type MapStyle } from '../../../shared/mapStyle'
 
 type SaveState = 'saved' | 'saving' | 'dirty' | 'error'
 
@@ -30,7 +32,7 @@ export async function copyText(text: string) {
 
 const isDefaultTitle = (s: string) => !s || s === 'Untitled' || s === '未命名'
 
-export function Workspace({ doc, onMetaChange, settings, onImport, onImportDoc, onAbout, onToggleNav, isAdmin, onOpenSettings }: {
+export function Workspace({ doc, onMetaChange, settings, onImport, onImportDoc, onAbout, onToggleNav, isAdmin, onOpenSettings, mapStyle = DEFAULT_MAP_STYLE, onMapStyleChange }: {
   doc: Doc
   onMetaChange: (d: Partial<Doc> & { id: string }) => void
   settings: { chunkChars: number; maxInputChars: number; configured: boolean; asr?: { configured: boolean; segmentSeconds: number } }
@@ -41,6 +43,9 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onImportDoc, 
   isAdmin?: boolean
   onOpenSettings?: (section: 'asr') => void
   onToggleNav: () => void
+  /** Per-user map theme and structure. */
+  mapStyle?: MapStyle
+  onMapStyleChange?: (s: MapStyle) => void
 }) {
   const { t } = useI18n()
   const editor = useRef<EditorHandle>(null)
@@ -102,8 +107,12 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onImportDoc, 
     map.current?.setOutline(tree, { reset })
   }
 
+  const styleRef = useRef(mapStyle)
+  styleRef.current = mapStyle
+  useEffect(() => { map.current?.setStyle(mapStyle) }, [mapStyle])
+
   useEffect(() => {
-    const m = createSimpleMindMap(mapEl.current!)
+    const m = createSimpleMindMap(mapEl.current!, styleRef.current)
     map.current = m
     renderFromMarkdown(doc.markdown, true)
     const offChange = m.onChange((tree: OutlineNode) => {
@@ -291,7 +300,7 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onImportDoc, 
           <button className="btn collapsible" disabled={busy || !selection} title={t('modeExpand')} aria-label={t('modeExpand')} onClick={() => setGenOpen({ mode: 'expand' })}><span className="ico">＋</span><span className="lbl">{t('expandShort')}</span></button>
           <Menu title={t('export')} testId="export-menu" trigger={<><span className="ico">⇩</span><span className="lbl">{t('export')}</span><span className="caret">▾</span></>} items={[
             { key: 'md', label: 'Markdown (.md)', onSelect: () => doExport('md') },
-            ...(map.current?.exportFormats ?? []).map((f) => ({ key: f, label: `${f.toUpperCase()} (.${f})`, onSelect: () => doExport(f) })),
+            ...(map.current?.exportFormats ?? SMM_EXPORT_FORMATS).map((f) => ({ key: f, label: `${f.toUpperCase()} (.${f})`, onSelect: () => doExport(f) })),
             { key: 'opml', label: 'OPML (.opml)', onSelect: () => doExport('opml') },
           ]} />
           <Menu className="btn icon-only" title={t('more')} testId="more-menu" trigger="⋯" items={[
@@ -314,7 +323,7 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onImportDoc, 
           <div className="pane-head">{t('editor')}</div>
           <MarkdownEditor key={doc.id} ref={editor} initial={doc.markdown} placeholder={t('emptyDoc')} onChange={onEditorChange} />
         </section>
-        <section className="pane map-pane">
+        <section className={`pane map-pane${THEME_SWATCH[mapStyle.theme].dark ? ' map-dark' : ''}`} data-map-theme={mapStyle.theme} data-map-layout={mapStyle.layout}>
           <div className="pane-head row">
             <span>{t('map')}</span>
             <div className="spacer" />
@@ -326,6 +335,7 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onImportDoc, 
             <button className="icon-btn" title={t('expandAll')} onClick={() => cmd('expandAll')}>⊞</button>
             <button className="icon-btn" title={t('collapseAll')} onClick={() => cmd('collapseAll')}>⊟</button>
             <button className="icon-btn" title={t('fit')} onClick={() => cmd('fit')}>⤢</button>
+            {onMapStyleChange && <MapStylePicker value={mapStyle} onChange={onMapStyleChange} />}
           </div>
           <div className="map-host" ref={mapEl} />
           {empty && !busy && !voice && (

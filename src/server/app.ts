@@ -5,7 +5,7 @@ import { streamSSE } from 'hono/streaming'
 import { bodyLimit } from 'hono/body-limit'
 import { clampSegmentSeconds, type AppConfig } from './config'
 import { testAsr, transcribe, type AsrConfig } from './asr'
-import { getSetting, setSetting, type DB } from './db'
+import { getSetting, getUserPrefs, setSetting, setUserPrefs, type DB } from './db'
 import { SecretBox } from './secrets'
 import { SetupCode } from './setupCode'
 import { RateLimiter, SESSION_COOKIE, createFirstUser, createSession, deleteSession, sessionUser, userCount, type User } from './auth'
@@ -15,6 +15,7 @@ import { DEFAULT_SYSTEM_PROMPT } from './prompts'
 import { expandNode, generateOutline, type GenEvent } from './generate'
 import { parseMarkdown, type OutlineNode } from '../shared/outline'
 import { APP_NAME } from '../shared/brand'
+import { isMapLayout, isMapTheme, normalizeMapStyle } from '../shared/mapStyle'
 
 type Env = { Variables: { user: User } }
 
@@ -233,6 +234,29 @@ export function createApp(deps: AppDeps) {
     db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id)
     if (current) { const s = createSession(db, u.id, config.sessionDays); setSessionCookie(c, s.token, s.expires) }
     return c.json({ ok: true })
+  })
+
+  // Per-user preferences (map theme and layout apply to all of this user's documents).
+  const prefsView = (userId: number) => {
+    const p = getUserPrefs(db, userId)
+    const s = normalizeMapStyle({ theme: p.mapTheme, layout: p.mapLayout })
+    return { mapTheme: s.theme, mapLayout: s.layout }
+  }
+  app.get('/api/prefs', (c) => c.json({ prefs: prefsView(c.get('user').id) }))
+  app.put('/api/prefs', async (c) => {
+    const body = await c.req.json().catch(() => ({}))
+    const u = c.get('user')
+    const next = getUserPrefs(db, u.id)
+    if (body.mapTheme !== undefined) {
+      if (!isMapTheme(body.mapTheme)) return c.json({ error: 'Unknown map theme' }, 400)
+      next.mapTheme = body.mapTheme
+    }
+    if (body.mapLayout !== undefined) {
+      if (!isMapLayout(body.mapLayout)) return c.json({ error: 'Unknown map layout' }, 400)
+      next.mapLayout = body.mapLayout
+    }
+    setUserPrefs(db, u.id, next)
+    return c.json({ prefs: prefsView(u.id) })
   })
 
   // Documents (always scoped to the logged-in user)

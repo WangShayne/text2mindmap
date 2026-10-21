@@ -7,13 +7,19 @@ import ExportPDF from 'simple-mind-map/src/plugins/ExportPDF.js'
 import ExportXMind from 'simple-mind-map/src/plugins/ExportXMind.js'
 import type { OutlineNode } from '../../../shared/outline'
 import { outlineToSmm, smmToOutline, type SmmNode } from '../../../shared/smm'
+import { DEFAULT_MAP_STYLE, MAP_THEMES, type MapStyle } from '../../../shared/mapStyle'
+import { THEME_CONFIGS, smmThemeName } from './themes'
 import type { AdapterFactory, ExportFormat, MapCommand, MindMapAdapter, Selection } from './adapter'
+
+/** Image/file formats this renderer exports in the browser (known before the map is created). */
+export const SMM_EXPORT_FORMATS: ExportFormat[] = ['png', 'svg', 'pdf', 'xmind']
 
 let pluginsRegistered = false
 function registerPlugins() {
   if (pluginsRegistered) return
   pluginsRegistered = true
   const M = MindMap as any
+  for (const t of MAP_THEMES) M.defineTheme(smmThemeName(t), THEME_CONFIGS[t])
   M.usePlugin(Drag).usePlugin(Select).usePlugin(KeyboardNavigation).usePlugin(ExportPDF).usePlugin(ExportXMind).usePlugin(Export)
 }
 
@@ -28,7 +34,7 @@ function findPath(node: SmmNode, uid: string, indices: number[] = [], texts: str
   return null
 }
 
-export const createSimpleMindMap: AdapterFactory = (el) => {
+export const createSimpleMindMap: AdapterFactory = (el, initialStyle = DEFAULT_MAP_STYLE) => {
   registerPlugins()
   // simple-mind-map refuses a container without size; give it one until layout settles.
   const r = el.getBoundingClientRect()
@@ -37,7 +43,8 @@ export const createSimpleMindMap: AdapterFactory = (el) => {
   const mm: any = new (MindMap as any)({
     el,
     data: outlineToSmm({ text: '', kind: 'heading', children: [] }),
-    layout: 'logicalStructure',
+    layout: initialStyle.layout,
+    theme: smmThemeName(initialStyle.theme),
     readonly: false,
     fit: true,
     mousewheelAction: 'zoom',
@@ -48,14 +55,6 @@ export const createSimpleMindMap: AdapterFactory = (el) => {
     // Keep only features that Markdown can represent.
     enableFreeDrag: false,
     isShowCreateChildBtnIcon: true,
-    themeConfig: {
-      backgroundColor: 'transparent',
-      lineColor: '#94a3b8',
-      lineWidth: 2,
-      root: { fillColor: '#4f46e5', color: '#ffffff', fontSize: 20, borderWidth: 0, fontWeight: 'bold' },
-      second: { fillColor: '#eef2ff', color: '#1e1b4b', borderColor: '#c7d2fe', borderWidth: 1, fontSize: 16 },
-      node: { color: '#1f2937', fontSize: 14 },
-    },
   })
   if (!sized) { el.style.minWidth = ''; el.style.minHeight = '' }
   // Generalizations (Ctrl+G) cannot be expressed in Markdown.
@@ -84,6 +83,11 @@ export const createSimpleMindMap: AdapterFactory = (el) => {
   const safe = (fn: () => void) => { if (destroyed || !el.isConnected || !el.clientWidth || !el.clientHeight) return; try { fn() } catch (e) { console.warn(e) } }
   const ro = new ResizeObserver(() => safe(() => mm.resize()))
   ro.observe(el)
+
+  let style: MapStyle = { ...initialStyle }
+  // A layout switch re-renders asynchronously; fit once that render has finished.
+  let fitAfterRender = false
+  mm.on('node_tree_render_end', () => { if (fitAfterRender) { fitAfterRender = false; safe(() => mm.view.fit()) } })
 
   const adapter: MindMapAdapter = {
     setOutline(tree, opts) {
@@ -115,10 +119,18 @@ export const createSimpleMindMap: AdapterFactory = (el) => {
         case 'zoomOut': mm.view.narrow(); break
       }
     },
-    exportFormats: ['png', 'svg', 'pdf', 'xmind'] as ExportFormat[],
+    exportFormats: SMM_EXPORT_FORMATS,
     async exportAs(format, fileName) {
       // png/pdf: (name, transparent=false); svg: (name); xmind: (name)
       await mm.export(format, true, fileName, false)
+    },
+    setStyle(next) {
+      if (next.theme !== style.theme) mm.setTheme(smmThemeName(next.theme))
+      if (next.layout !== style.layout) {
+        fitAfterRender = true
+        mm.setLayout(next.layout)
+      }
+      style = { ...next }
     },
     resize() { safe(() => mm.resize()) },
     destroy() {

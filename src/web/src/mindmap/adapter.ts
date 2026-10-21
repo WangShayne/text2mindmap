@@ -4,6 +4,7 @@
  * (simple-mind-map today) can be swapped, e.g. for mind-elixir, by writing another adapter.
  */
 import type { OutlineNode } from '../../../shared/outline'
+import type { MapStyle } from '../../../shared/mapStyle'
 
 export type ExportFormat = 'png' | 'svg' | 'pdf' | 'xmind'
 
@@ -28,8 +29,10 @@ export interface MindMapAdapter {
   command(cmd: MapCommand): void
   readonly exportFormats: ExportFormat[]
   exportAs(format: ExportFormat, fileName: string): Promise<void>
+  /** Colour theme and layout; also used by image exports. */
+  setStyle(style: MapStyle): void
   resize(): void
   destroy(): void
 }
 
-export type AdapterFactory = (el: HTMLElement) => MindMapAdapter
+export type AdapterFactory = (el: HTMLElement, style?: MapStyle) => MindMapAdapter

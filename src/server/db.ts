@@ -32,6 +32,8 @@ const MIGRATIONS: string[] = [
      key TEXT PRIMARY KEY,
      value TEXT NOT NULL
    );`,
+  // v2: per-user preferences (JSON), e.g. {"mapTheme":"dark","mapLayout":"mindMap"}
+  `ALTER TABLE users ADD COLUMN prefs TEXT NOT NULL DEFAULT '{}';`,
 ]
 
 export function openDb(dataDir: string, file = 'text2mindmap.db'): DB {
@@ -65,4 +67,13 @@ export function getSetting(db: DB, key: string): string | undefined {
 export function setSetting(db: DB, key: string, value: string | null): void {
   if (value === null) db.prepare('DELETE FROM settings WHERE key = ?').run(key)
   else db.prepare('INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, value)
+}
+
+export function getUserPrefs(db: DB, userId: number): Record<string, unknown> {
+  const r = db.prepare('SELECT prefs FROM users WHERE id = ?').get(userId) as { prefs: string } | undefined
+  try { const v = JSON.parse(r?.prefs ?? '{}'); return v && typeof v === 'object' && !Array.isArray(v) ? v : {} } catch { return {} }
+}
+
+export function setUserPrefs(db: DB, userId: number, prefs: Record<string, unknown>): void {
+  db.prepare('UPDATE users SET prefs = ? WHERE id = ?').run(JSON.stringify(prefs), userId)
 }
