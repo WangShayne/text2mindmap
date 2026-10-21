@@ -243,3 +243,5 @@ Speech recognition: the recommended self-hosted model is [SenseVoice](https://gi
 Only the free plugins shipped in the `simple-mind-map` npm package are used. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for all bundled packages and their licenses.
 
 text2mindmap is released under the [MIT License](LICENSE). © 2026 Shayne Wang
+
+The test audio in `scripts/asr-bench/audio/` is **not** covered by the MIT License: it comes from Google FLEURS (CC BY 4.0) and HKUST ASCEND (CC BY-SA 4.0). See [scripts/asr-bench/DATA_LICENSE.md](scripts/asr-bench/DATA_LICENSE.md).

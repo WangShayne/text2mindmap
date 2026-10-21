@@ -47,7 +47,7 @@ node bench.mjs --help
 | `audio/zh-5min.m4a` | 普通话朗读，27 句，1039 字 | 5:05 | Google FLEURS `cmn_hans_cn` 测试集，**CC BY 4.0** |
 | `audio/mix-50s.m4a` | 中英混说（对话），11 句 | 0:51 | HKUST ASCEND 测试集，**CC BY-SA 4.0** |
 
-都是**真人录音，不是 TTS**。参考文本是数据集自带的人工转写（`*.ref.txt`）。详细说明和署名见 [audio/ATTRIBUTION.md](audio/ATTRIBUTION.md)。这些音频不属于 text2mindmap 的 MIT 许可范围。
+都是**真人录音，不是 TTS**。参考文本是数据集自带的人工转写（`*.ref.txt`）。详细说明和署名见 [DATA_LICENSE.md](DATA_LICENSE.md)。这些音频不属于 text2mindmap 的 MIT 许可范围。
 
 ## 怎么看结果
 
@@ -71,4 +71,4 @@ NETWORK=host BASE=http://127.0.0.1:18040/v1 ./run.sh
 
 ---
 
-**English summary**: `./run.sh` benchmarks an OpenAI-compatible ASR server with the same 16 kHz WAV / ≤28 s quiet-point segmentation the text2mindmap browser uses, sending segments sequentially, and reports duration, segment count and latency, wall time, real-time factor, transcript and CER against a reference. It runs inside a throwaway `node:22-alpine` container (ffmpeg installed in the container), so the host needs only Docker. It talks to the ASR server directly, not through text2mindmap's `/api/transcribe`. Test audio is real human speech from FLEURS (CC BY 4.0) and ASCEND (CC BY-SA 4.0); see `audio/ATTRIBUTION.md`.
+**English summary**: `./run.sh` benchmarks an OpenAI-compatible ASR server with the same 16 kHz WAV / ≤28 s quiet-point segmentation the text2mindmap browser uses, sending segments sequentially, and reports duration, segment count and latency, wall time, real-time factor, transcript and CER against a reference. It runs inside a throwaway `node:22-alpine` container (ffmpeg installed in the container), so the host needs only Docker. It talks to the ASR server directly, not through text2mindmap's `/api/transcribe`. Test audio is real human speech from FLEURS (CC BY 4.0) and ASCEND (CC BY-SA 4.0); see `DATA_LICENSE.md`.

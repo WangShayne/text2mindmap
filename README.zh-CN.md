@@ -233,3 +233,5 @@ The mind map in this product is built on the [SimpleMindMap](https://github.com/
 只使用了 `simple-mind-map` npm 包自带的免费插件。所有打包进来的第三方依赖及其许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 text2mindmap 使用 [MIT 许可证](LICENSE)。© 2026 Shayne Wang
+
+`scripts/asr-bench/audio/` 里的测试音频**不在 MIT 许可证范围内**，分别来自 Google FLEURS（CC BY 4.0）和港科大 ASCEND（CC BY-SA 4.0），详见 [scripts/asr-bench/DATA_LICENSE.md](scripts/asr-bench/DATA_LICENSE.md)。
