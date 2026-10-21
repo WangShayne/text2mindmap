@@ -4,6 +4,8 @@ import { useI18n } from '../i18n'
 import { MarkdownEditor, type EditorHandle } from './MarkdownEditor'
 import { GenerateDialog, type GenRequest } from './GenerateDialog'
 import { Menu } from './Menu'
+import { VoicePanel, type VoiceSource } from './VoicePanel'
+import { classifyFile, isTrivialMarkdown, appendOutlineUnder, titleFromFileName, UPLOAD_ACCEPT } from '../lib/entry'
 import { createSimpleMindMap } from '../mindmap/simpleMindMapAdapter'
 import type { ExportFormat, MapCommand, MindMapAdapter, Selection } from '../mindmap/adapter'
 import { parseMarkdown, serializeOutline, type OutlineNode } from '../../../shared/outline'
@@ -28,11 +30,13 @@ export async function copyText(text: string) {
 
 const isDefaultTitle = (s: string) => !s || s === 'Untitled' || s === '未命名'
 
-export function Workspace({ doc, onMetaChange, settings, onImport, onAbout, onToggleNav, isAdmin, onOpenSettings }: {
+export function Workspace({ doc, onMetaChange, settings, onImport, onImportDoc, onAbout, onToggleNav, isAdmin, onOpenSettings }: {
   doc: Doc
   onMetaChange: (d: Partial<Doc> & { id: string }) => void
   settings: { chunkChars: number; maxInputChars: number; configured: boolean; asr?: { configured: boolean; segmentSeconds: number } }
   onImport: () => void
+  /** Creates a new document from imported Markdown (used when the current one is not empty). */
+  onImportDoc?: (title: string, markdown: string) => Promise<void>
   onAbout: () => void
   isAdmin?: boolean
   onOpenSettings?: (section: 'asr') => void
@@ -47,7 +51,12 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onAbout, onTo
   title.current = doc.title
   const [selection, setSelection] = useState<Selection | null>(null)
   const [save, setSave] = useState<SaveState>('saved')
-  const [genOpen, setGenOpen] = useState<null | 'full' | 'expand'>(null)
+  const [genOpen, setGenOpen] = useState<null | { mode: 'full' | 'expand'; text?: string }>(null)
+  const [voice, setVoice] = useState<null | { key: number; source: VoiceSource }>(null)
+  const [empty, setEmpty] = useState(() => isTrivialMarkdown(doc.markdown))
+  const [dragging, setDragging] = useState(false)
+  const uploadRef = useRef<HTMLInputElement>(null)
+  const rootEl = useRef<HTMLDivElement>(null)
   const [gen, setGen] = useState<{ status: string; running: boolean; error?: boolean } | null>(null)
   const [toast, setToast] = useState('')
   const abort = useRef<AbortController | null>(null)
@@ -112,6 +121,7 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onAbout, onTo
 
   const onEditorChange = (text: string, origin: string | null) => {
     scheduleSave(text)
+    setEmpty(isTrivialMarkdown(text))
     if (origin === 'map') return
     window.clearTimeout(syncTimer.current)
     syncTimer.current = window.setTimeout(() => renderFromMarkdown(text), origin === 'gen' ? 120 : 250)
@@ -120,18 +130,20 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onAbout, onTo
   // ---------- generation ----------
   const runGeneration = async (req: GenRequest) => {
     setGenOpen(null)
+    setVoice(null)
     const ac = new AbortController()
     abort.current = ac
     const before = editor.current!.getText()
     let acc = ''
     let finalMd: string | null = null
     setGen({ status: t('generating'), running: true })
+    const live = req.mode === 'full' && !req.target // stream into the editor only when replacing
     const onEvent = (e: GenEvent) => {
       if (e.type === 'progress') setGen({ running: true, status: e.stage === 'merge' ? t('merging') : t('chunkProgress', { i: e.index!, n: e.total! }) })
-      else if (e.type === 'retry') { acc = ''; setGen({ running: true, status: t('retrying', { reason: e.reason }) }); if (req.mode === 'full') editor.current!.setText(before, 'gen') }
+      else if (e.type === 'retry') { acc = ''; setGen({ running: true, status: t('retrying', { reason: e.reason }) }); if (live) editor.current!.setText(before, 'gen') }
       else if (e.type === 'delta') {
         acc += e.text
-        if (req.mode === 'full') editor.current!.setText(acc, 'gen')
+        if (live) editor.current!.setText(acc, 'gen')
         else setGen({ running: true, status: `${t('generating')} ${acc.split('\n').filter(Boolean).length}` })
       } else if (e.type === 'done') finalMd = e.markdown
       else if (e.type === 'error') throw Object.assign(new Error(e.message), { code: e.code })
@@ -146,7 +158,10 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onAbout, onTo
         await streamGenerate({ mode: 'expand', markdown: serializeOutline(tree), path: req.selection.texts, existing: node.children.map((c) => c.text), instructions: req.instructions }, onEvent, ac.signal)
       }
       if (finalMd === null) throw new Error('The server closed the stream before finishing.')
-      if (req.mode === 'full') {
+      if (req.mode === 'full' && req.target) {
+        // Re-read the document in case it changed while generating, then attach under the chosen node.
+        editor.current!.setText(appendOutlineUnder(editor.current!.getText(), req.target.indices, finalMd, title.current), 'gen')
+      } else if (req.mode === 'full') {
         editor.current!.setText(finalMd, 'gen')
         const root = parseMarkdown(finalMd).text
         if (isDefaultTitle(title.current) && root) {
@@ -166,10 +181,10 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onAbout, onTo
       setTimeout(() => setGen((g) => (g && !g.running && !g.error ? null : g)), 2500)
     } catch (e) {
       if (ac.signal.aborted) {
-        if (req.mode === 'full' && acc) editor.current!.setText(serializeOutline(parseMarkdown(acc, title.current)), 'gen')
+        if (live && acc) editor.current!.setText(serializeOutline(parseMarkdown(acc, title.current)), 'gen')
         setGen({ running: false, status: t('stopped') })
       } else {
-        if (req.mode === 'full') editor.current!.setText(before, 'gen')
+        if (live) editor.current!.setText(before, 'gen')
         setGen({ running: false, error: true, status: (e as Error).message })
       }
     } finally {
@@ -178,13 +193,68 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onAbout, onTo
   }
 
   const startFromDialog = (req: GenRequest) => {
-    if (req.mode === 'full') {
-      const cur = editor.current!.getText().trim()
-      const trivial = !cur || /^#\s[^\n]*$/.test(cur)
-      if (!trivial && !window.confirm(t('confirmReplace'))) return
-    }
+    if (req.mode === 'full' && !req.target && !isTrivialMarkdown(editor.current!.getText()) && !window.confirm(t('confirmReplace'))) return
     void runGeneration(req)
   }
+
+  // ---------- entries: text / record / upload (+ drag-and-drop) ----------
+  const openText = (text?: string) => { setVoice(null); setGenOpen({ mode: 'full', text }) }
+  const startRecord = () => { setGenOpen(null); setVoice({ key: Date.now(), source: { kind: 'mic' } }) }
+  // Must run inside the click handler so the browser allows the file picker.
+  const pickUpload = () => uploadRef.current?.click()
+  const importMarkdown = async (f: File) => {
+    const md = await f.text()
+    const name = titleFromFileName(f.name)
+    if (isTrivialMarkdown(editor.current!.getText())) {
+      editor.current!.setText(md, 'import')
+      const root = parseMarkdown(md, '').text || name
+      if (isDefaultTitle(title.current) && root) {
+        onMetaChange({ id: doc.id, title: root })
+        api('PUT', `/api/docs/${doc.id}`, { title: root }).catch(() => {})
+      }
+      setTimeout(() => map.current?.command('fit'), 400)
+      setToast(t('mdImported', { name: f.name }))
+    } else if (onImportDoc) {
+      await flush()
+      await onImportDoc(name || t('untitled'), md)
+      setToast(t('mdImportedNew', { name: f.name }))
+    }
+  }
+  const routeFile = async (f: File) => {
+    if (gen?.running) return
+    const kind = classifyFile(f.name, f.type)
+    if (kind === 'audio') { setGenOpen(null); setVoice({ key: Date.now(), source: { kind: 'file', file: f } }) }
+    else if (kind === 'markdown') await importMarkdown(f)
+    else if (kind === 'text') openText(await f.text())
+    else setToast(t('unsupportedFile', { name: f.name }))
+  }
+  const routeRef = useRef(routeFile)
+  routeRef.current = routeFile
+
+  useEffect(() => {
+    const el = rootEl.current!
+    const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files')
+    let depth = 0
+    const enter = (e: DragEvent) => { if (!hasFiles(e)) return; e.preventDefault(); depth++; setDragging(true) }
+    const over = (e: DragEvent) => { if (!hasFiles(e)) return; e.preventDefault(); e.stopPropagation(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy' }
+    const leave = (e: DragEvent) => { if (!hasFiles(e)) return; depth = Math.max(0, depth - 1); if (!depth) setDragging(false) }
+    // Capture phase, so the Markdown editor does not paste the file's raw text itself.
+    const drop = (e: DragEvent) => {
+      if (!hasFiles(e)) return
+      e.preventDefault(); e.stopPropagation()
+      depth = 0; setDragging(false)
+      const f = e.dataTransfer?.files?.[0]
+      if (f) void routeRef.current(f)
+    }
+    el.addEventListener('dragenter', enter, true)
+    el.addEventListener('dragover', over, true)
+    el.addEventListener('dragleave', leave, true)
+    el.addEventListener('drop', drop, true)
+    return () => { el.removeEventListener('dragenter', enter, true); el.removeEventListener('dragover', over, true); el.removeEventListener('dragleave', leave, true); el.removeEventListener('drop', drop, true) }
+  }, [])
+
+  const asr = settings.asr ?? { configured: false, segmentSeconds: 28 }
+  const busy = !!gen?.running
 
   // ---------- export ----------
   const fileBase = (doc.title || 'mindmap').replace(/[\\/:*?"<>|]/g, '_')
@@ -201,17 +271,24 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onAbout, onTo
   useEffect(() => { if (toast) { const id = setTimeout(() => setToast(''), 2500); return () => clearTimeout(id) } }, [toast])
 
   return (
-    <div className="workspace">
+    <div className="workspace" ref={rootEl}>
+      <input ref={uploadRef} type="file" hidden accept={UPLOAD_ACCEPT} data-testid="upload-input" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) void routeFile(f) }} />
       <div className="toolbar">
         <button className="icon-btn nav-toggle" title={t('menu')} aria-label={t('menu')} onClick={onToggleNav}>☰</button>
         <input className="title-input" value={doc.title} title={doc.title} onChange={(e) => onMetaChange({ id: doc.id, title: e.target.value })}
           onBlur={(e) => api('PUT', `/api/docs/${doc.id}`, { title: e.target.value }).then((r: any) => onMetaChange({ id: doc.id, title: r.doc.title })).catch(() => {})} />
         <span className={`save-state ${save}`}>{save === 'saving' ? t('saving') : save === 'error' ? t('saveFailed') : save === 'dirty' ? '•' : t('saved')}</span>
         <div className="toolbar-actions">
-          {gen?.running
+          {busy
             ? <button className="btn danger" data-testid="stop" onClick={() => abort.current?.abort()}><span className="ico">■</span><span className="lbl">{t('stop')}</span></button>
-            : <button className="btn primary" data-testid="generate" onClick={() => setGenOpen('full')}><span className="ico">✨</span><span className="lbl">{t('generate')}</span></button>}
-          <button className="btn collapsible" disabled={!!gen?.running || !selection} title={t('modeExpand')} aria-label={t('modeExpand')} onClick={() => setGenOpen('expand')}><span className="ico">＋</span><span className="lbl">{t('expandShort')}</span></button>
+            : (
+              <div className="entry-group" role="group" aria-label={t('generate')}>
+                <button className="btn entry" data-testid="entry-text" title={t('entryTextTip')} aria-label={t('entryTextTip')} onClick={() => openText()}><span className="ico">✍️</span><span className="lbl">{t('entryText')}</span></button>
+                <button className={`btn entry${voice?.source.kind === 'mic' ? ' active' : ''}`} data-testid="entry-record" title={asr.configured ? t('entryRecordTip') : t('asrConfigureFirst')} aria-label={t('entryRecordTip')} onClick={startRecord}><span className="ico">🎙</span><span className="lbl">{t('entryRecord')}</span></button>
+                <button className="btn entry" data-testid="entry-upload" title={t('entryUploadTip')} aria-label={t('entryUploadTip')} onClick={pickUpload}><span className="ico">📁</span><span className="lbl">{t('entryUpload')}</span></button>
+              </div>
+            )}
+          <button className="btn collapsible" disabled={busy || !selection} title={t('modeExpand')} aria-label={t('modeExpand')} onClick={() => setGenOpen({ mode: 'expand' })}><span className="ico">＋</span><span className="lbl">{t('expandShort')}</span></button>
           <Menu title={t('export')} testId="export-menu" trigger={<><span className="ico">⇩</span><span className="lbl">{t('export')}</span><span className="caret">▾</span></>} items={[
             { key: 'md', label: 'Markdown (.md)', onSelect: () => doExport('md') },
             ...(map.current?.exportFormats ?? []).map((f) => ({ key: f, label: `${f.toUpperCase()} (.${f})`, onSelect: () => doExport(f) })),
@@ -251,10 +328,29 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onAbout, onTo
             <button className="icon-btn" title={t('fit')} onClick={() => cmd('fit')}>⤢</button>
           </div>
           <div className="map-host" ref={mapEl} />
+          {empty && !busy && !voice && (
+            <div className="empty-entries" data-testid="empty-entries">
+              <div className="empty-title">{t('emptyTitle')}</div>
+              <div className="entry-cards">
+                <button className="entry-card" data-testid="card-text" onClick={() => openText()}>
+                  <span className="card-ico">✍️</span><span className="card-title">{t('cardPaste')}</span><span className="card-sub">{t('cardPasteSub')}</span>
+                </button>
+                <button className={`entry-card${asr.configured ? '' : ' off'}`} data-testid="card-record" onClick={startRecord}>
+                  <span className="card-ico">🎙</span><span className="card-title">{t('cardRecord')}</span><span className="card-sub">{asr.configured ? t('cardRecordSub') : t('cardRecordOff')}</span>
+                </button>
+                <button className="entry-card" data-testid="card-upload" onClick={pickUpload}>
+                  <span className="card-ico">📁</span><span className="card-title">{t('cardUpload')}</span><span className="card-sub">{t('cardUploadSub')}</span>
+                </button>
+              </div>
+              <div className="muted small empty-drop">{t('emptyDrop')}</div>
+            </div>
+          )}
           <div className="shortcuts">{t('shortcuts')}</div>
         </section>
       </div>
-      {genOpen && <GenerateDialog initialMode={genOpen} selection={selection} chunkChars={settings.chunkChars} maxChars={settings.maxInputChars} asr={settings.asr ?? { configured: false, segmentSeconds: 28 }} isAdmin={isAdmin} onOpenSettings={onOpenSettings} onStart={startFromDialog} onClose={() => setGenOpen(null)} />}
+      {voice && <VoicePanel key={voice.key} source={voice.source} asr={asr} selection={selection} maxChars={settings.maxInputChars} isAdmin={isAdmin} onOpenSettings={onOpenSettings} onStart={startFromDialog} onClose={() => setVoice(null)} />}
+      {dragging && <div className="drop-overlay" data-testid="drop-overlay"><div>📁 {t('dropHere')}</div></div>}
+      {genOpen && <GenerateDialog initialMode={genOpen.mode} initialText={genOpen.text} selection={selection} chunkChars={settings.chunkChars} maxChars={settings.maxInputChars} asr={asr} isAdmin={isAdmin} onOpenSettings={onOpenSettings} onStart={startFromDialog} onClose={() => setGenOpen(null)} />}
       {toast && <div className="toast">{toast}</div>}
     </div>
   )

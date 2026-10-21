@@ -105,7 +105,7 @@ The renderer sits behind a small interface (`src/web/src/mindmap/adapter.ts`), a
 
 ## Self-hosted speech recognition
 
-The *Generate* dialog can turn speech into text before the outline is made: **record** from the microphone (text appears every ~8 s) or **upload an audio file** (mp3, m4a, wav, webm, ogg, flac…). The text lands in the input box, so you can fix it before clicking *Start*.
+The toolbar (and the cards on an empty document) has three entries: **Text**, **Record** and **Upload**. *Record* starts recording with one click; a small panel shows the timer and the text as it is recognized (every ~8 s). After *Stop* you can edit the text, then click *Generate map*. *Upload* (or dropping a file onto the page) picks the route from the file type: audio (mp3, m4a, wav, webm, ogg, flac…) is transcribed the same way, `.md` is imported as the map directly (no LLM), and `.txt` opens the text dialog prefilled. When a node is selected, you can choose to replace the map or append the result under that node.
 
 How it works: the browser decodes the audio with the Web Audio API, converts it to **16 kHz mono 16-bit WAV** and splits it into segments of at most *Max segment length* (default **28 s**, cut at a quiet moment so words stay whole). Segments are sent one by one to `POST /api/transcribe`, which streams them to `{ASR Base URL}/audio/transcriptions` (OpenAI-compatible multipart, `response_format=json`; `text` and `verbose_json` answers are accepted too). Nothing is converted on the server, so the Docker image needs no ffmpeg. The ASR key is stored encrypted like the LLM key and never sent to the browser.
 

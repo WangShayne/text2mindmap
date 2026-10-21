@@ -59,12 +59,17 @@ export class MicRecorder {
   private chunks: Float32Array[] = []
   private length = 0
   private rate = 48000
+  private stopped = false
 
   constructor(private segmentSeconds: number, private onSegment: (samples16k: Float32Array) => void, private onLevel?: (rms: number) => void) {}
 
   async start() {
-    this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } })
+    // stop() may have been called while the permission prompt was open.
+    if (this.stopped) { stream.getTracks().forEach((t) => t.stop()); return }
+    this.stream = stream
     this.ctx = new AudioContext()
+    void this.ctx.resume().catch(() => {})
     this.rate = this.ctx.sampleRate
     const src = this.ctx.createMediaStreamSource(this.stream)
     // ScriptProcessorNode is deprecated but works everywhere without a separate worklet file.
@@ -96,6 +101,7 @@ export class MicRecorder {
   }
 
   async stop() {
+    this.stopped = true
     if (this.node) this.node.onaudioprocess = null
     this.cut(true)
     this.stream?.getTracks().forEach((t) => t.stop())
