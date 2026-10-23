@@ -9,7 +9,7 @@ import type { OutlineNode } from '../../../shared/outline'
 import { outlineToSmm, smmToOutline, type SmmNode } from '../../../shared/smm'
 import { DEFAULT_MAP_STYLE, MAP_THEMES, type MapStyle } from '../../../shared/mapStyle'
 import { THEME_CONFIGS, smmThemeName } from './themes'
-import type { AdapterFactory, ExportFormat, MapCommand, MindMapAdapter, Selection } from './adapter'
+import type { AdapterFactory, ExportFormat, FlashKind, MapCommand, MindMapAdapter, Selection } from './adapter'
 
 /** Image/file formats this renderer exports in the browser (known before the map is created). */
 export const SMM_EXPORT_FORMATS: ExportFormat[] = ['png', 'svg', 'pdf', 'xmind']
@@ -33,6 +33,16 @@ function findPath(node: SmmNode, uid: string, indices: number[] = [], texts: str
   }
   return null
 }
+
+/** Copies `expand: false` onto nodes that kept their path and text, so an update does not reopen them. */
+function keepCollapsed(prev: SmmNode, next: SmmNode) {
+  if (prev.data.text !== next.data.text) return
+  if (prev.data.expand === false) next.data.expand = false
+  const a = prev.children ?? [], b = next.children ?? []
+  for (let i = 0; i < Math.min(a.length, b.length); i++) keepCollapsed(a[i], b[i])
+}
+
+const FLASH_MS: Record<FlashKind, number> = { added: 1500, updated: 1000, focus: 1500 }
 
 export const createSimpleMindMap: AdapterFactory = (el, initialStyle = DEFAULT_MAP_STYLE) => {
   registerPlugins()
@@ -66,6 +76,7 @@ export const createSimpleMindMap: AdapterFactory = (el, initialStyle = DEFAULT_M
 
   const changeCbs = new Set<(t: OutlineNode) => void>()
   const selectCbs = new Set<(s: Selection | null) => void>()
+  const clickCbs = new Set<(indices: number[]) => void>()
   let selection: Selection | null = null
 
   mm.on('data_change', (data: SmmNode) => {
@@ -78,6 +89,43 @@ export const createSimpleMindMap: AdapterFactory = (el, initialStyle = DEFAULT_M
     selection = node ? findPath(mm.getData(false), node.getData('uid')) : null
     selectCbs.forEach((cb) => cb(selection))
   })
+
+  mm.on('node_click', (node: any) => {
+    const sel = findPath(mm.getData(false), node.getData('uid'))
+    if (sel) clickCbs.forEach((cb) => cb(sel.indices))
+  })
+
+  const nodeAt = (indices: number[]) => {
+    let n = mm.renderer.root
+    for (const i of indices) n = n?.children?.[i]
+    return n
+  }
+  // Flashes requested while a render is pending wait for it, so the new nodes exist.
+  let renderPending = false
+  let queued: Array<() => void> = []
+  mm.on('node_tree_render_end', () => {
+    renderPending = false
+    const q = queued
+    queued = []
+    q.forEach((fn) => fn())
+  })
+  const whenRendered = (fn: () => void) => {
+    if (!renderPending) return fn()
+    queued.push(fn)
+    // Identical data may not re-render; do not hold the highlight forever.
+    setTimeout(() => { if (queued.includes(fn)) { queued = queued.filter((f) => f !== fn); fn() } }, 1000)
+  }
+  const flashNow = (paths: number[][], kind: FlashKind) => {
+    for (const p of paths) {
+      const g: SVGElement | undefined = nodeAt(p)?.group?.node
+      if (!g) continue
+      const cls = `node-flash-${kind}`
+      g.classList.remove(cls)
+      void g.getBoundingClientRect() // restart the animation
+      g.classList.add(cls)
+      setTimeout(() => g.classList.remove(cls), FLASH_MS[kind])
+    }
+  }
 
   let destroyed = false
   const safe = (fn: () => void) => { if (destroyed || !el.isConnected || !el.clientWidth || !el.clientHeight) return; try { fn() } catch (e) { console.warn(e) } }
@@ -98,8 +146,32 @@ export const createSimpleMindMap: AdapterFactory = (el, initialStyle = DEFAULT_M
         selectCbs.forEach((cb) => cb(null))
         setTimeout(() => safe(() => mm.view.fit()), 50)
       } else {
+        keepCollapsed(mm.getData(false), data)
+        renderPending = true
         mm.updateData(data)
       }
+    },
+    setReadonly(on) { mm.setMode(on ? 'readonly' : 'edit') },
+    flash(paths, kind) { whenRendered(() => flashNow(paths, kind)) },
+    onNodeClick(cb) { clickCbs.add(cb); return () => clickCbs.delete(cb) },
+    reveal(indices) {
+      whenRendered(() => {
+        const g: SVGElement | undefined = nodeAt(indices)?.group?.node
+        if (!g) return
+        const n = g.getBoundingClientRect(), box = el.getBoundingClientRect(), m = 40
+        // Smallest pan that brings the node inside the view; the zoom is left alone.
+        const dx = n.left < box.left + m ? box.left + m - n.left : n.right > box.right - m ? box.right - m - n.right : 0
+        const dy = n.top < box.top + m ? box.top + m - n.top : n.bottom > box.bottom - m ? box.bottom - m - n.bottom : 0
+        if (dx || dy) mm.view.translateXY(dx, dy)
+        flashNow([indices], 'focus')
+      })
+    },
+    getViewState() {
+      const collapsed: number[][] = []
+      const walk = (n: SmmNode, p: number[]) => { if (n.data.expand === false) collapsed.push(p); (n.children ?? []).forEach((c, i) => walk(c, [...p, i])) }
+      walk(mm.getData(false), [])
+      const v = mm.view
+      return { transform: { scaleX: v.scale, translateX: v.x, translateY: v.y }, collapsed }
     },
     getOutline() { return smmToOutline(mm.getData(false)) },
     onChange(cb) { changeCbs.add(cb); return () => changeCbs.delete(cb) },
@@ -136,6 +208,7 @@ export const createSimpleMindMap: AdapterFactory = (el, initialStyle = DEFAULT_M
     destroy() {
       destroyed = true
       ro.disconnect()
+      queued = []
       el.removeEventListener('mousedown', onDown, true)
       mm.destroy()
     },

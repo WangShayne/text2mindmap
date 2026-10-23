@@ -34,6 +34,8 @@ const MIGRATIONS: string[] = [
    );`,
   // v2: per-user preferences (JSON), e.g. {"mapTheme":"dark","mapLayout":"mindMap"}
   `ALTER TABLE users ADD COLUMN prefs TEXT NOT NULL DEFAULT '{}';`,
+  // v3 (v0.5): transcript slices + node refs (JSON TranscriptDoc); NULL for older documents
+  `ALTER TABLE documents ADD COLUMN transcript TEXT;`,
 ]
 
 export function openDb(dataDir: string, file = 'text2mindmap.db'): DB {

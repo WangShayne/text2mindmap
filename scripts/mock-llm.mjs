@@ -20,6 +20,25 @@ function outlineFor(text) {
   return md
 }
 
+// v0.5 transcript prompts: lines look like "[s12] text". NO_MARKS in the text drops the ⟦…⟧ source markers.
+const tagged = (user) => [...user.matchAll(/^\[(s\d+)\] (.*)$/gm)].map((m) => ({ id: m[1], text: m[2] }))
+const mark = (user, ids) => (user.includes('NO_MARKS') ? '' : ` ⟦${ids.join(',')}⟧`)
+
+function sectionOutline(user) {
+  const lines = tagged(user)
+  if (!lines.length) return outlineFor(user.replace(/^[\s\S]*?\n---\n\n/, ''))
+  let md = `# ${lines[0].text.slice(0, 16)}\n`
+  for (const l of lines) md += `## ${l.text.slice(0, 16)}${mark(user, [l.id])}\n- ${l.text.slice(0, 40)} 要点${mark(user, [l.id])}\n`
+  return md
+}
+
+function incrementalAnswer(user) {
+  if (user.includes('NOTHING_NEW')) return 'NONE'
+  const branch = /Current branches:\n- (.*)/.exec(user)?.[1] ?? '新分支'
+  const lines = tagged(user)
+  return `- ${user.includes('NEW_BRANCH') ? '新分支' : branch}\n` + lines.map((l) => `  - ${l.text.slice(0, 20)}${mark(user, [l.id])}\n`).join('')
+}
+
 const ASR_LINES = [
   '今天我们讨论一下新产品的发布计划。',
   '第一部分是目标用户，主要是欧洲的中小企业。',
@@ -80,6 +99,12 @@ export function startMockLlm(port = 0) {
     else if (user.includes('PROSE_ONCE') && n === 1) answer = 'Here is your outline:\nThe text is about testing.\nIt has several parts.'
     else if (sys.includes('expand one node')) answer = '- 新子节点一\n  - 细节 A\n- 新子节点二\n- New child three'
     else if (user.includes('Reply with: ok')) answer = 'ok'
+    else if (sys.includes('live mind map')) answer = incrementalAnswer(user)
+    else if (user.includes('Below are Markdown outlines') && user.includes('source markers')) {
+      const body = user.split('\n').filter((l) => /^(## |- )/.test(l)).join('\n')
+      answer = '# Merged outline\n' + (user.includes('MERGE_DROPS') ? body.replace(/\s*⟦[^⟧]*⟧/g, '') : body)
+    }
+    else if (user.includes('of a recording transcript') || user.includes('This is a recording transcript')) answer = sectionOutline(user)
     else if (user.includes('Below are Markdown outlines')) answer = '```markdown\n# Merged outline\n' + user.split('\n').filter((l) => /^#{1}\s/.test(l)).map((l) => '## ' + l.slice(2) + '\n- merged point').join('\n') + '\n```'
     else answer = '<think>planning…</think>' + outlineFor(user.replace(/^This is part[^\n]*\n\n---\n\n/, ''))
     if (!j.stream) {

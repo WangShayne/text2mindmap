@@ -15,11 +15,29 @@ export interface Selection {
   texts: string[]
 }
 
+/** Short highlight after an incremental update (docs/v0.5-ui-states.md §4). */
+export type FlashKind = 'added' | 'updated' | 'focus'
+
+/** Pan/zoom and collapsed nodes; an incremental update must leave both unchanged. */
+export interface ViewState {
+  transform: { scaleX: number; translateX: number; translateY: number }
+  collapsed: number[][]
+}
+
 export type MapCommand = 'addChild' | 'addSibling' | 'remove' | 'undo' | 'redo' | 'fit' | 'expandAll' | 'collapseAll' | 'zoomIn' | 'zoomOut'
 
 export interface MindMapAdapter {
   /** Render the outline. `reset` = new document (clear undo history, fit view). */
   setOutline(tree: OutlineNode, opts?: { reset?: boolean }): void
+  /** Read-only: no editing or dragging; pan, zoom and node clicks still work. */
+  setReadonly(on: boolean): void
+  /** Briefly highlights nodes by path (after the pending render, if any). */
+  flash(paths: number[][], kind: FlashKind): void
+  /** Called when a node is clicked, also in read-only mode. */
+  onNodeClick(cb: (indices: number[]) => void): () => void
+  /** Brings a node into view without changing the zoom, and flashes it. */
+  reveal(indices: number[]): void
+  getViewState(): ViewState
   /** Current outline as shown on the map. */
   getOutline(): OutlineNode
   /** Called after the user changes the map (rename, add, delete, drag, undo…). */

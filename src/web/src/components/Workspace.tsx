@@ -1,17 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, streamGenerate, type Doc, type GenEvent } from '../api'
+import { api, streamGenerate, type Doc, type GenEvent, type MapChanges } from '../api'
 import { useI18n } from '../i18n'
 import { MarkdownEditor, type EditorHandle } from './MarkdownEditor'
 import { GenerateDialog, type GenRequest } from './GenerateDialog'
 import { Menu } from './Menu'
 import { MapStylePicker } from './MapStylePicker'
 import { VoicePanel, type VoiceSource } from './VoicePanel'
-import { canRecord } from '../audio/useTranscriber'
+import { TranscriptPanel } from './TranscriptPanel'
+import { canRecord, fmtClock } from '../audio/useTranscriber'
+import { useLiveMap, type LiveSlice } from '../transcript/useLiveMap'
+import { fmtRange, nodeForSlice, precisionOf, refForNode } from '../transcript/linking'
+import { isMockTranscript, mockEveryMs, mockRetry, startMockFeed } from '../transcript/mockTranscript'
 import { classifyFile, isTrivialMarkdown, appendOutlineUnder, titleFromFileName, UPLOAD_ACCEPT } from '../lib/entry'
 import { createSimpleMindMap, SMM_EXPORT_FORMATS } from '../mindmap/simpleMindMapAdapter'
 import type { ExportFormat, MapCommand, MindMapAdapter, Selection } from '../mindmap/adapter'
 import { parseMarkdown, serializeOutline, type OutlineNode } from '../../../shared/outline'
 import { DEFAULT_MAP_STYLE, THEME_SWATCH, type MapStyle } from '../../../shared/mapStyle'
+import type { NodeRef } from '../../../shared/transcript'
 
 type SaveState = 'saved' | 'saving' | 'dirty' | 'error'
 
@@ -108,6 +113,38 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onImportDoc, 
     map.current?.setOutline(tree, { reset })
   }
 
+  // ---------- transcript + live map (v0.5) ----------
+  const mock = useRef(isMockTranscript()).current
+  const [trOpen, setTrOpen] = useState(() => mock || !!doc.transcript?.slices.length)
+  const [live, setLive] = useState<null | { since: number }>(null) // set while recording
+  const [now, setNow] = useState(Date.now())
+  const [active, setActive] = useState<string[]>([])
+  const [focusKey, setFocusKey] = useState(0)
+  const [hint, setHint] = useState('')
+  const stopFeed = useRef<(() => void) | null>(null)
+  const slicesRef = useRef<LiveSlice[]>([])
+  const saveTranscript = (refs: NodeRef[]) => {
+    const slices = slicesRef.current.filter((s) => !s.client).map(({ client: _, ...s }) => s)
+    api('PUT', `/api/docs/${doc.id}`, { transcript: { version: 1, slices, refs } }).catch(() => {})
+  }
+  const onApply = useCallback((md: string, refs: NodeRef[], changes: MapChanges) => {
+    const tree = parseMarkdown(md, title.current)
+    shown.current = serializeOutline(tree)
+    map.current?.setOutline(tree, { reset: false }) // keeps pan, zoom and collapsed branches
+    editor.current?.setText(md, 'map')
+    map.current?.flash(changes.added, 'added')
+    map.current?.flash(changes.updated, 'updated')
+    saveTranscript(refs)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.id])
+  const onBusy = useCallback(() => setToast(t('trBusy')), [t])
+  const getTitle = useCallback(() => title.current, [])
+  const getMarkdown = useCallback(() => editor.current?.getText() ?? '', [])
+  const lm = useLiveMap({ docId: doc.id, title: getTitle, getMarkdown, onApply, onBusy })
+  slicesRef.current = lm.slices
+  const refsRef = useRef<NodeRef[]>([])
+  refsRef.current = lm.refs
+
   const styleRef = useRef(mapStyle)
   styleRef.current = mapStyle
   useEffect(() => { map.current?.setStyle(mapStyle) }, [mapStyle])
@@ -125,9 +162,74 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onImportDoc, 
       if (serializeOutline(parseMarkdown(current, title.current)) !== canonical) editor.current?.setText(canonical, 'map')
     })
     const offSel = m.onSelect(setSelection)
-    return () => { offChange(); offSel(); m.destroy(); map.current = null }
+    const offClick = m.onNodeClick((indices) => focusRef.current(indices))
+    return () => { offChange(); offSel(); offClick(); m.destroy(); map.current = null }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc.id])
+
+  // Load the saved transcript of this document; stop any recording of the previous one.
+  useEffect(() => {
+    stopFeed.current?.(); stopFeed.current = null; setLive(null)
+    lm.reset()
+    setActive([]); setHint('')
+    for (const s of doc.transcript?.slices ?? []) lm.upsert(s)
+    lm.setRefs(doc.transcript?.refs ?? [])
+    lm.markSent() // already part of the saved map
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.id])
+
+  // Map node -> slices (three precision grades, docs/v0.5-ui-states.md §2).
+  const focusNode = (indices: number[]) => {
+    if (!slicesRef.current.length) return
+    const ref = refForNode(refsRef.current, indices)
+    const p = precisionOf(ref)
+    setActive(ref?.sliceIds ?? [])
+    setFocusKey((k) => k + 1)
+    setHint(p === 'slice' ? t('trPrecSlice', { range: fmtRange(ref!.timeRange), id: ref!.sliceIds.join(', ') })
+      : p === 'section' ? t('trPrecSection', { range: fmtRange(ref!.timeRange) })
+      : t('trPrecNone'))
+  }
+  const focusRef = useRef(focusNode)
+  focusRef.current = focusNode
+
+  // Slice -> map node.
+  const onSliceClick = (s: LiveSlice) => {
+    const ref = nodeForSlice(refsRef.current, s.id)
+    setActive([s.id])
+    setFocusKey((k) => k + 1)
+    if (!ref) { setHint(t('trSliceNoNode', { id: s.id })); return }
+    map.current?.reveal(ref.path)
+    let node: OutlineNode | undefined = parseMarkdown(editor.current?.getText() ?? '', title.current)
+    for (const i of ref.path) node = node?.children[i]
+    setHint(t('trSliceNode', { text: node?.text ?? '' }))
+  }
+  const onRetry = (id: string) => {
+    const s = slicesRef.current.find((x) => x.id === id)
+    if (s && mock) mockRetry(s, lm.upsert)
+    else setToast(t('trFailed'))
+  }
+
+  // Mock recording: slices every `?every=` ms, map update every two slices, final update on stop.
+  const stopRecording = () => {
+    stopFeed.current?.(); stopFeed.current = null
+    setLive(null)
+    void lm.send()
+  }
+  const toggleMockRecording = () => {
+    if (live) { stopRecording(); return }
+    setTrOpen(true)
+    setLive({ since: Date.now() })
+    stopFeed.current = startMockFeed(lm.upsert, stopRecording)
+  }
+  const sendRef = useRef(lm.send)
+  sendRef.current = lm.send
+  useEffect(() => {
+    if (!live) return
+    const tick = window.setInterval(() => setNow(Date.now()), 1000)
+    const upd = window.setInterval(() => void sendRef.current(), mock ? mockEveryMs() * 2 : 45_000)
+    return () => { clearInterval(tick); clearInterval(upd) }
+  }, [live, mock])
+  useEffect(() => () => stopFeed.current?.(), [])
 
   const onEditorChange = (text: string, origin: string | null) => {
     scheduleSave(text)
@@ -265,6 +367,18 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onImportDoc, 
 
   const asr = settings.asr ?? { configured: false, segmentSeconds: 28 }
   const busy = !!gen?.running
+  const readonly = !!live || busy
+  useEffect(() => { map.current?.setReadonly(readonly) }, [readonly, doc.id])
+  useEffect(() => {
+    if (!mock) return
+    const w = window as unknown as { __t2m?: unknown }
+    w.__t2m = { view: () => map.current?.getViewState(), map: () => map.current, live: () => ({ slices: slicesRef.current, refs: refsRef.current, status: lm.status }) }
+  })
+  const committed = lm.slices.filter((s) => !s.client).length
+  const trStatus = lm.status === 'sending' ? t('trLiveSending')
+    : lm.status === 'error' ? t('trLiveError', { msg: lm.error })
+    : live ? t('trRecording', { time: fmtClock((now - live.since) / 1000), n: committed })
+    : t('trLiveIdle', { n: lm.unsentCount() })
 
   // ---------- export ----------
   const fileBase = (doc.title || 'mindmap').replace(/[\\/:*?"<>|]/g, '_')
@@ -298,7 +412,8 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onImportDoc, 
                 <button className="btn entry" data-testid="entry-upload" title={t('entryUploadTip')} aria-label={t('entryUploadTip')} onClick={pickUpload}><span className="ico">📁</span><span className="lbl">{t('entryUpload')}</span></button>
               </div>
             )}
-          <button className="btn collapsible" disabled={busy || !selection} title={t('modeExpand')} aria-label={t('modeExpand')} onClick={() => setGenOpen({ mode: 'expand' })}><span className="ico">＋</span><span className="lbl">{t('expandShort')}</span></button>
+          {mock && <button className={`btn${live ? ' danger' : ''}`} data-testid="mock-record" title="Mock transcript" onClick={toggleMockRecording}><span className="ico">🧪</span><span className="lbl">{live ? t('stop') : 'Mock'}</span></button>}
+          <button className="btn collapsible" disabled={busy || readonly || !selection} title={t('modeExpand')} aria-label={t('modeExpand')} onClick={() => setGenOpen({ mode: 'expand' })}><span className="ico">＋</span><span className="lbl">{t('expandShort')}</span></button>
           <Menu title={t('export')} testId="export-menu" trigger={<><span className="ico">⇩</span><span className="lbl">{t('export')}</span><span className="caret">▾</span></>} items={[
             { key: 'md', label: 'Markdown (.md)', onSelect: () => doExport('md') },
             ...(map.current?.exportFormats ?? SMM_EXPORT_FORMATS).map((f) => ({ key: f, label: `${f.toUpperCase()} (.${f})`, onSelect: () => doExport(f) })),
@@ -319,7 +434,13 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onImportDoc, 
           {!gen.running && <button className="icon-btn" title={t('close')} aria-label={t('close')} onClick={() => setGen(null)}>✕</button>}
         </div>
       )}
-      <div className="panes">
+      <div className={`panes${trOpen ? ' with-transcript' : ''}`}>
+        {trOpen && (
+          <TranscriptPanel slices={lm.slices} active={active} focusKey={focusKey} status={trStatus}
+            tone={lm.status === 'error' ? 'err' : lm.status === 'sending' || live ? 'info' : 'ok'}
+            hint={hint} busy={lm.status === 'sending'} onSliceClick={onSliceClick} onRetry={onRetry}
+            onUpdateNow={() => void lm.send(true)} onClose={() => setTrOpen(false)} />
+        )}
         <section className="pane editor-pane">
           <div className="pane-head">{t('editor')}</div>
           <MarkdownEditor key={doc.id} ref={editor} initial={doc.markdown} placeholder={t('emptyDoc')} onChange={onEditorChange} />
@@ -328,18 +449,20 @@ export function Workspace({ doc, onMetaChange, settings, onImport, onImportDoc, 
           <div className="pane-head row">
             <span>{t('map')}</span>
             <div className="spacer" />
-            <button className="icon-btn" title={t('undo')} onClick={() => cmd('undo')}>↶</button>
-            <button className="icon-btn" title={t('redo')} onClick={() => cmd('redo')}>↷</button>
-            <button className="icon-btn" title={t('addChild')} disabled={!selection} onClick={() => cmd('addChild')}>⤷</button>
-            <button className="icon-btn" title={t('addSibling')} disabled={!selection || selection.indices.length === 0} onClick={() => cmd('addSibling')}>↧</button>
-            <button className="icon-btn" title={t('removeNode')} disabled={!selection || selection.indices.length === 0} onClick={() => cmd('remove')}>⌫</button>
+            {!trOpen && lm.slices.length > 0 && <button className="icon-btn" title={t('transcript')} data-testid="tr-open" onClick={() => setTrOpen(true)}>☰</button>}
+            <button className="icon-btn" title={t('undo')} disabled={readonly} onClick={() => cmd('undo')}>↶</button>
+            <button className="icon-btn" title={t('redo')} disabled={readonly} onClick={() => cmd('redo')}>↷</button>
+            <button className="icon-btn" title={t('addChild')} disabled={readonly || !selection} onClick={() => cmd('addChild')}>⤷</button>
+            <button className="icon-btn" title={t('addSibling')} disabled={readonly || !selection || selection.indices.length === 0} onClick={() => cmd('addSibling')}>↧</button>
+            <button className="icon-btn" title={t('removeNode')} disabled={readonly || !selection || selection.indices.length === 0} onClick={() => cmd('remove')}>⌫</button>
             <button className="icon-btn" title={t('expandAll')} onClick={() => cmd('expandAll')}>⊞</button>
             <button className="icon-btn" title={t('collapseAll')} onClick={() => cmd('collapseAll')}>⊟</button>
             <button className="icon-btn" title={t('fit')} onClick={() => cmd('fit')}>⤢</button>
             {onMapStyleChange && <MapStylePicker value={mapStyle} onChange={onMapStyleChange} />}
           </div>
-          <div className="map-host" ref={mapEl} />
-          {empty && !busy && !voice && (
+          <div className="map-host" ref={mapEl} onDoubleClick={() => { if (readonly) setToast(t('trReadonlyTip')) }} />
+          {readonly && <div className="ro-pill" data-testid="ro-pill" title={t('trReadonlyTip')}>{t('trReadonly')}</div>}
+          {empty && !busy && !voice && !live && (
             <div className="empty-entries" data-testid="empty-entries">
               <div className="empty-title">{t('emptyTitle')}</div>
               <div className="entry-cards">

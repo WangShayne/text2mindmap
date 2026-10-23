@@ -32,3 +32,37 @@ export function expandUserPrompt(path: string[], existingChildren: string[], doc
     .filter(Boolean)
     .join('\n\n')
 }
+
+// ---------- v0.5 transcript modes ----------
+
+const SOURCE_RULE = 'Each transcript line starts with its id in square brackets, like [s12]. End every line you write (except the "# " title) with the ids of the transcript lines it is based on, written as ⟦s12⟧ or ⟦s12,s13⟧. Put ids nowhere else.'
+
+export function sectionUserPrompt(text: string, index: number, total: number, range: string, tags: boolean): string {
+  const head = total > 1
+    ? `This is part ${index + 1} of ${total} (${range}) of a recording transcript. Outline ONLY this part, following the output rules. Use "# " for a short title of this part.`
+    : 'This is a recording transcript. Outline it, following the output rules.'
+  return `${head}${tags ? `\n\n${SOURCE_RULE}` : ''}\n\n---\n\n${text}`
+}
+
+export function transcriptMergePrompt(outlines: string[], tags: boolean): string {
+  const keep = tags ? '\n\nThe lines end with source markers like ⟦s12⟧. Keep them: every line of the merged outline must end with the markers of the lines it came from (combine them when you merge lines, e.g. ⟦s3,s40⟧).' : ''
+  return mergeUserPrompt(outlines).replace('\n\n', `${keep}\n\n`)
+}
+
+export const INCREMENTAL_SYSTEM_PROMPT = `You keep a live mind map up to date while a recording is going on. You get the map's current branches and the newest transcript lines. Output ONLY a nested Markdown bullet list ("- " items, 2 spaces of indent per level) with the NEW information:
+1. Top-level items are branches. To add under an existing branch, repeat its text exactly as given. Otherwise start a new, short branch.
+2. Under them, write the new points as short key phrases, at most 2 more levels.
+3. Do not repeat points that are already in the map. Do not rewrite, rename or remove anything.
+4. If the new lines contain nothing worth adding, output exactly: NONE
+5. Write in the language of the transcript. No headings, no preface, no explanation, no code fences.`
+
+export function incrementalUserPrompt(title: string, branches: string, text: string, tags: boolean): string {
+  return [
+    `Mind map title: ${title}`,
+    `Current branches:\n${branches || '(the map is empty)'}`,
+    tags ? SOURCE_RULE : '',
+    `New transcript lines:\n${text}`,
+  ]
+    .filter(Boolean)
+    .join('\n\n')
+}

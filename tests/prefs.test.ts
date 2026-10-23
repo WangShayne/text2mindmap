@@ -83,11 +83,11 @@ describe('map style preferences (per user)', () => {
     try {
       // Simulate a v0.2 database: schema version 1, no prefs column.
       let db = openDb(dir)
-      db.exec("ALTER TABLE users DROP COLUMN prefs; PRAGMA user_version = 1;")
+      db.exec("ALTER TABLE users DROP COLUMN prefs; ALTER TABLE documents DROP COLUMN transcript; PRAGMA user_version = 1;")
       db.prepare("INSERT INTO users(username, password_hash, is_admin, created_at) VALUES('old', 'x', 1, 0)").run()
       db.close()
       db = openDb(dir)
-      expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(2)
+      expect((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(3)
       expect(getUserPrefs(db, 1)).toEqual({})
       db.prepare('UPDATE users SET prefs = ? WHERE id = 1').run(JSON.stringify({ mapTheme: 'dark' }))
       db.close()

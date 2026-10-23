@@ -11,6 +11,7 @@ export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: s
 export type LlmErrorCode = 'auth' | 'network' | 'not_found' | 'model' | 'rate_limit' | 'timeout' | 'bad_response' | 'upstream' | 'not_configured' | 'aborted'
 
 export class LlmError extends Error {
+  index?: number
   constructor(public code: LlmErrorCode, message: string, public status?: number) {
     super(message)
   }

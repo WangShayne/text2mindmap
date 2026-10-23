@@ -1,3 +1,5 @@
+import type { NodeRef, TranscriptDoc } from '../../shared/transcript'
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) { super(message) }
 }
@@ -15,16 +17,20 @@ export async function api<T = any>(method: string, path: string, body?: unknown)
 }
 
 export interface DocMeta { id: string; title: string; created_at: number; updated_at: number }
-export interface Doc extends DocMeta { markdown: string }
+export interface Doc extends DocMeta { markdown: string; transcript?: TranscriptDoc | null }
 export interface Me { id: number; username: string; isAdmin: boolean }
 
+/** `changes` paths of an incremental update (docs/v0.5-api-contract.md §3.3). */
+export interface MapChanges { added: number[][]; updated: number[][] }
+
 export type GenEvent =
-  | { type: 'start'; chunks: number }
-  | { type: 'progress'; stage: 'chunk' | 'merge'; index?: number; total?: number }
+  | { type: 'start'; chunks?: number; seq?: number; slices?: number }
+  | { type: 'progress'; stage: 'chunk' | 'section' | 'merge'; index?: number; total?: number; timeRange?: [number, number] }
+  | { type: 'section_done'; index: number; total: number; markdown: string; refs: NodeRef[] }
   | { type: 'delta'; text: string }
   | { type: 'retry'; reason: string }
-  | { type: 'done'; markdown: string }
-  | { type: 'error'; code: string; message: string }
+  | { type: 'done'; markdown: string; refs?: NodeRef[]; seq?: number; changes?: MapChanges }
+  | { type: 'error'; code: string; message: string; seq?: number; index?: number }
 
 /** POSTs to /api/generate and calls onEvent for each SSE event. Abort with the signal. */
 export async function streamGenerate(body: unknown, onEvent: (e: GenEvent) => void, signal: AbortSignal): Promise<void> {

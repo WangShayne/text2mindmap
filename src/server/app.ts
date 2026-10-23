@@ -14,8 +14,9 @@ import { LlmError, listModels, testConnection, type LlmConfig } from './llm'
 import { DEFAULT_SYSTEM_PROMPT } from './prompts'
 import { RK, effectiveRealtime, testRealtime } from './realtime'
 import { normalizeRealtimeUrl } from './config'
-import { expandNode, generateOutline, type GenEvent } from './generate'
+import { expandNode, generateFromTranscript, generateOutline, incrementalUpdate, type GenEvent } from './generate'
 import { parseMarkdown, type OutlineNode } from '../shared/outline'
+import { hasText, parseRefs, parseSlices, parseTranscriptDoc, type TranscriptDoc } from '../shared/transcript'
 import { APP_NAME } from '../shared/brand'
 import { isMapLayout, isMapTheme, normalizeMapStyle } from '../shared/mapStyle'
 
@@ -267,25 +268,44 @@ export function createApp(deps: AppDeps) {
     return c.json({ docs: rows })
   })
 
+  const MAX_DOC = 2_000_000
+  /** body.transcript -> undefined (leave as is), null (clear), JSON text, or an error response. */
+  const readTranscript = (c: Context<Env>, v: unknown): { value?: string | null; error?: Response } => {
+    if (v === undefined) return {}
+    if (v === null) return { value: null }
+    const t = parseTranscriptDoc(v)
+    if (typeof t === 'string') return { error: c.json({ error: t }, 400) }
+    const json = JSON.stringify(t)
+    if (json.length > MAX_DOC) return { error: c.json({ error: 'Transcript too large' }, 413) }
+    return { value: json }
+  }
+  const parseStored = (json: string | null): TranscriptDoc | null => {
+    if (!json) return null
+    try { const t = parseTranscriptDoc(JSON.parse(json)); return typeof t === 'string' ? null : t } catch { return null }
+  }
+
   app.post('/api/docs', async (c) => {
     const body = await c.req.json().catch(() => ({}))
     const id = crypto.randomUUID()
     const now = Date.now()
     const title = sanitizeTitle(body.title)
     const markdown = typeof body.markdown === 'string' ? body.markdown : `# ${title}\n`
-    if (markdown.length > 2_000_000) return c.json({ error: 'Document too large' }, 413)
-    db.prepare('INSERT INTO documents(id, user_id, title, markdown, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)').run(id, c.get('user').id, title, markdown, now, now)
-    return c.json({ doc: { id, title, markdown, created_at: now, updated_at: now } }, 201)
+    if (markdown.length > MAX_DOC) return c.json({ error: 'Document too large' }, 413)
+    const tr = readTranscript(c, body.transcript)
+    if (tr.error) return tr.error
+    db.prepare('INSERT INTO documents(id, user_id, title, markdown, transcript, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)').run(id, c.get('user').id, title, markdown, tr.value ?? null, now, now)
+    return c.json({ doc: { id, title, markdown, transcript: parseStored(tr.value ?? null), created_at: now, updated_at: now } }, 201)
   })
 
   const getDoc = (c: Context<Env>) =>
-    db.prepare('SELECT id, title, markdown, created_at, updated_at FROM documents WHERE id = ? AND user_id = ?').get(c.req.param('id') ?? '', c.get('user').id) as
-      | { id: string; title: string; markdown: string; created_at: number; updated_at: number }
+    db.prepare('SELECT id, title, markdown, transcript, created_at, updated_at FROM documents WHERE id = ? AND user_id = ?').get(c.req.param('id') ?? '', c.get('user').id) as
+      | { id: string; title: string; markdown: string; transcript: string | null; created_at: number; updated_at: number }
       | undefined
+  const docView = (d: NonNullable<ReturnType<typeof getDoc>>) => ({ ...d, transcript: parseStored(d.transcript) })
 
   app.get('/api/docs/:id', (c) => {
     const doc = getDoc(c)
-    return doc ? c.json({ doc }) : c.json({ error: 'Not found' }, 404)
+    return doc ? c.json({ doc: docView(doc) }) : c.json({ error: 'Not found' }, 404)
   })
 
   app.put('/api/docs/:id', async (c) => {
@@ -294,10 +314,13 @@ export function createApp(deps: AppDeps) {
     const body = await c.req.json().catch(() => ({}))
     const title = body.title !== undefined ? sanitizeTitle(body.title, doc.title) : doc.title
     const markdown = typeof body.markdown === 'string' ? body.markdown : doc.markdown
-    if (markdown.length > 2_000_000) return c.json({ error: 'Document too large' }, 413)
+    if (markdown.length > MAX_DOC) return c.json({ error: 'Document too large' }, 413)
+    const tr = readTranscript(c, body.transcript)
+    if (tr.error) return tr.error
+    const transcript = tr.value === undefined ? doc.transcript : tr.value
     const now = Date.now()
-    db.prepare('UPDATE documents SET title = ?, markdown = ?, updated_at = ? WHERE id = ? AND user_id = ?').run(title, markdown, now, doc.id, c.get('user').id)
-    return c.json({ doc: { ...doc, title, markdown, updated_at: now } })
+    db.prepare('UPDATE documents SET title = ?, markdown = ?, transcript = ?, updated_at = ? WHERE id = ? AND user_id = ?').run(title, markdown, transcript, now, doc.id, c.get('user').id)
+    return c.json({ doc: docView({ ...doc, title, markdown, transcript, updated_at: now }) })
   })
 
   app.delete('/api/docs/:id', (c) => {
@@ -320,15 +343,48 @@ export function createApp(deps: AppDeps) {
   })
 
   // Generation (SSE)
+  // One incremental update at a time per user + document.
+  const incremental = new Set<string>()
   app.post('/api/generate', async (c) => {
     const body = await c.req.json().catch(() => ({}))
-    const mode = body.mode === 'expand' ? 'expand' : 'full'
+    const mode = ['expand', 'transcript', 'incremental'].includes(body.mode) ? (body.mode as 'expand' | 'transcript' | 'incremental') : 'full'
     const llm = effectiveLlm(deps)
+    const title = sanitizeTitle(body.title)
+    let run: (ctx: Parameters<typeof generateOutline>[0]) => Promise<unknown>
+    let lockKey: string | undefined
+    let seq: number | undefined
     if (mode === 'full') {
       if (typeof body.text !== 'string' || !body.text.trim()) return c.json({ error: 'Text is required' }, 400)
       if (body.text.length > config.maxInputChars) return c.json({ error: `Text is too long (max ${config.maxInputChars} characters)` }, 413)
-    } else if (!Array.isArray(body.path) || !body.path.length || typeof body.markdown !== 'string') {
-      return c.json({ error: 'path and markdown are required for expand' }, 400)
+      run = (ctx) => generateOutline(ctx, body.text, title)
+    } else if (mode === 'expand') {
+      if (!Array.isArray(body.path) || !body.path.length || typeof body.markdown !== 'string') return c.json({ error: 'path and markdown are required for expand' }, 400)
+      run = (ctx) => expandNode(ctx, body.markdown, body.path.map(String), Array.isArray(body.existing) ? body.existing.map(String) : [], typeof body.instructions === 'string' ? body.instructions.slice(0, 1000) : undefined)
+    } else if (mode === 'transcript') {
+      const slices = parseSlices(body.slices)
+      if (typeof slices === 'string') return c.json({ error: slices }, 400)
+      if (!slices.some(hasText)) return c.json({ error: 'The transcript has no text' }, 400)
+      if (slices.reduce((n, s) => n + s.text.length, 0) > config.maxInputChars) return c.json({ error: `Transcript is too long (max ${config.maxInputChars} characters)` }, 413)
+      const sec = Number(body.sectionSeconds)
+      const opts = { sectionSeconds: Number.isFinite(sec) ? Math.min(600, Math.max(300, sec)) : 600, refs: body.refs !== false }
+      run = (ctx) => generateFromTranscript(ctx, slices, title, opts)
+    } else {
+      if (!Number.isInteger(body.seq) || body.seq < 0) return c.json({ error: 'seq must be a non-negative integer' }, 400)
+      seq = body.seq as number
+      const markdown = body.markdown ?? ''
+      if (typeof markdown !== 'string') return c.json({ error: 'markdown must be a string' }, 400)
+      if (markdown.length > MAX_DOC) return c.json({ error: 'Document too large' }, 413)
+      const newSlices = parseSlices(body.newSlices ?? [])
+      if (typeof newSlices === 'string') return c.json({ error: newSlices }, 400)
+      if (newSlices.reduce((n, s) => n + s.text.length, 0) > config.maxInputChars) return c.json({ error: `Too much new text (max ${config.maxInputChars} characters)` }, 413)
+      const refs = parseRefs(body.refs ?? [])
+      if (typeof refs === 'string') return c.json({ error: refs }, 400)
+      const key = `${c.get('user').id}:${typeof body.docId === 'string' ? body.docId.slice(0, 100) : ''}`
+      if (incremental.has(key)) return c.json({ error: 'An update for this document is still running', code: 'busy', seq }, 409)
+      incremental.add(key)
+      lockKey = key
+      const input = { seq, title, markdown, refs, newSlices, tags: body.tags !== false }
+      run = (ctx) => incrementalUpdate(ctx, input)
     }
     const ac = new AbortController()
     c.req.raw.signal?.addEventListener('abort', () => ac.abort(), { once: true })
@@ -341,12 +397,16 @@ export function createApp(deps: AppDeps) {
       }
       const ctx = { cfg: llm, systemPrompt: getSetting(db, K.prompt), chunkChars: config.llmChunkChars, signal: ac.signal, emit }
       try {
-        if (mode === 'full') await generateOutline(ctx, body.text, sanitizeTitle(body.title))
-        else await expandNode(ctx, body.markdown, body.path.map(String), Array.isArray(body.existing) ? body.existing.map(String) : [], typeof body.instructions === 'string' ? body.instructions.slice(0, 1000) : undefined)
+        await run(ctx)
       } catch (e) {
         const err = e instanceof LlmError ? e : new LlmError('upstream', 'Generation failed')
         if (!(e instanceof LlmError)) console.error('[generate]', e)
-        emit({ type: 'error', code: err.code, message: err.message.split(llm.apiKey || '\u0000').join('***') })
+        emit({
+          type: 'error', code: err.code, message: err.message.split(llm.apiKey || '\u0000').join('***'),
+          ...(err.index !== undefined ? { index: err.index } : {}), ...(seq !== undefined ? { seq } : {}),
+        })
+      } finally {
+        if (lockKey) incremental.delete(lockKey)
       }
       await queue
     })
